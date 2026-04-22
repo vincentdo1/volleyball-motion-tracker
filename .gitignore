@@ -1,3 +1,36 @@
+# --- Project-specific ---
+test_videos/
+output_videos/
+models/
+cache/
+samples_raw/
+
+# Videos (local only, except curated samples)
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.avi
+*.part
+
+# Ship curated demo clips with the deployed app
+!samples/
+!samples/*.mp4
+
+# ML models
+*.task
+*.tflite
+*.pb
+*.pt
+*.onnx
+
+# Cached pose data
+*.npz
+*.pkl
+
+# Secrets
+.env
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
