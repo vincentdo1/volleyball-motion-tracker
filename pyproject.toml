@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "volleyball-tracker"
+version = "0.1.0"
+description = "Volleyball spike analysis: pose + ball detection, kinematics, HUD overlay."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Vincent" }]
+keywords = ["volleyball", "computer-vision", "mediapipe", "yolov8", "sports-analytics"]
+classifiers = [
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "mediapipe>=0.10",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+    "ultralytics>=8.0",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.5", "pytest>=8.0"]
+
+[project.scripts]
+volleyball-tracker = "volleyball_tracker.cli:main"
+
+[project.urls]
+Source = "https://github.com/Vincent/volleyball-motion-tracker"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/volleyball_tracker"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/volleyball_tracker",
+    "models/pose_landmarker_full.task",
+    "README.md",
+    "LICENSE",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]   # line length is handled by formatter
+
+[tool.ruff.format]
+quote-style = "double"
