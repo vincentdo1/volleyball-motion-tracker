@@ -1,4 +1,3 @@
-"""SciSports-style analytical overlay: spiker isolated + body-anchored callouts."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,10 +18,9 @@ from ..detection.pose import (
 __all__ = ["render_frame"]
 
 
-# --- Palette --------------------------------------------------------------------
-BG_TINT_BGR = (38, 22, 12)              # navy applied outside the spiker mask
+BG_TINT_BGR = (38, 22, 12)
 BONE_BGR = (250, 240, 235)
-ACCENT_BGR = (255, 200, 30)             # bright cyan (B, G, R)
+ACCENT_BGR = (255, 200, 30)
 ACCENT_RGB = (30, 200, 255)
 WHITE_RGB = (250, 252, 255)
 DIM_RGB = (160, 175, 195)
@@ -31,7 +29,6 @@ UNIT_RGB = (210, 222, 235)
 SUB_RGB = (140, 160, 180)
 BALL_HALO_BGR = (250, 240, 235)
 
-# --- Fonts ----------------------------------------------------------------------
 _BOLD_PATHS = ["C:\\Windows\\Fonts\\segoeuib.ttf", "C:\\Windows\\Fonts\\arialbd.ttf"]
 _REG_PATHS = ["C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\arial.ttf"]
 
@@ -46,7 +43,6 @@ def _load_font(paths: list[str], size: int) -> ImageFont.FreeTypeFont:
 
 
 def _font_set(frame_w: int) -> dict[str, ImageFont.FreeTypeFont]:
-    """Frame-width-scaled typography. Reference width is 1280px."""
     scale = frame_w / 1280.0
     return {
         "value":    _load_font(_BOLD_PATHS, max(24, int(34 * scale))),
@@ -66,7 +62,6 @@ def _textlen(d: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) ->
         return int(font.getbbox(text)[2])
 
 
-# --- Background isolation -------------------------------------------------------
 def _build_spiker_mask(person: Person, shape: tuple[int, ...]) -> np.ndarray:
     h, w = shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
@@ -100,7 +95,6 @@ def _apply_isolation(frame_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
     ).astype(np.uint8)
 
 
-# --- Skeleton + ball (OpenCV layer) --------------------------------------------
 def _draw_skeleton(frame: np.ndarray, person: Person, impact_arm: str | None) -> None:
     pts = person.points.astype(int)
     vis = person.visibility
@@ -140,7 +134,6 @@ def _draw_ball_trail(frame: np.ndarray, trail: list[tuple[int, int, float]]) -> 
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, dst=frame)
 
 
-# --- Callouts -------------------------------------------------------------------
 @dataclass
 class Callout:
     label: str
@@ -159,7 +152,7 @@ class PlacedCallout:
     box_y: float
     box_w: int
     box_h: int
-    align: str  # "left" or "right"
+    align: str
 
 
 def _slot_offset(slot_deg: float, r: float) -> tuple[float, float]:
@@ -201,7 +194,6 @@ def _layout_callouts(
         box_y = max(70, min(box_y, frame_h - h - margin))
         placed.append(PlacedCallout(co, box_x, box_y, w, h, align))
 
-    # Repulsion: nudge overlapping boxes apart vertically.
     for _ in range(4):
         for i in range(len(placed)):
             for j in range(i + 1, len(placed)):
@@ -256,7 +248,6 @@ def _draw_callout(d: ImageDraw.ImageDraw, item: PlacedCallout, fonts: dict) -> N
         d.text((underline_x1, underline_y + 4), co.sub, font=fonts["sub"], fill=SUB_RGB)
 
 
-# --- Callout assembly -----------------------------------------------------------
 def _build_callouts(
     person: Person,
     ball: BallDetection | None,
@@ -296,11 +287,11 @@ def _build_callouts(
         elb = metrics.elbow_extension_deg
         out.append(Callout(
             label="Arm Swing Angle",
-            value=f"{abs(metrics.arm_swing_angle_deg):.0f}°", unit="",
+            value=f"{abs(metrics.arm_swing_angle_deg):.0f}", unit="deg",
             anchor=(float(elbow_pt[0]), float(elbow_pt[1])),
             slot_deg=45,
             hot=is_impact_now,
-            sub=f"elbow {elb:.0f}°" if np.isfinite(elb) else "",
+            sub=f"elbow {elb:.0f} deg" if np.isfinite(elb) else "",
         ))
     if jump_visible:
         out.append(Callout(
@@ -331,13 +322,12 @@ def _build_callouts(
     return out
 
 
-# --- Header chips ---------------------------------------------------------------
 def _draw_header(
     d: ImageDraw.ImageDraw, w: int, frame_idx: int, fps: float,
     fm: FrameMetrics, is_impact_now: bool, fonts: dict,
 ) -> None:
     d.text((24, 18), "SPIKE  ANALYSIS", font=fonts["title"], fill=WHITE_RGB)
-    d.text((24, 40), f"t = {frame_idx/fps:5.2f} s  ·  frame {frame_idx:>4d}",
+    d.text((24, 40), f"t = {frame_idx/fps:5.2f} s  |  frame {frame_idx:>4d}",
            font=fonts["subtitle"], fill=DIM_RGB)
     d.line([(24, 62), (160, 62)], fill=ACCENT_RGB, width=1)
 
@@ -358,7 +348,6 @@ def _draw_header(
         chip("AIRBORNE", LABEL_RGB)
 
 
-# --- Main entry -----------------------------------------------------------------
 def render_frame(
     frame_bgr: np.ndarray,
     tracked_person: Person | None,
@@ -385,7 +374,6 @@ def render_frame(
     if ball is not None:
         _draw_ball(out, ball)
 
-    # Single PIL pass for all text + leader lines.
     rgb = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(rgb)
     d = ImageDraw.Draw(pil, "RGBA")

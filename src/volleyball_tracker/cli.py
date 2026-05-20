@@ -1,4 +1,3 @@
-"""CLI entry point: `volleyball-tracker INPUT [OUTPUT] [options]`."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +12,6 @@ __all__ = ["default_output_path", "main"]
 
 
 def default_output_path(input_path: str) -> str:
-    """Professional default name for rendered analysis videos."""
     stem = Path(input_path).stem.lower()
     normalized = re.sub(r"[^a-z0-9]+", "_", stem).strip("_") or "clip"
     filename = f"volleyball_spike_performance_analysis_{normalized}.mp4"

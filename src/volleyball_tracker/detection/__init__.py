@@ -1,4 +1,3 @@
-"""Per-frame detection: ball (YOLOv8) and people (MediaPipe pose)."""
 from .ball import BallDetection, BallDetector, interpolate_missing, reject_near_faces
 from .pose import Person, PoseDetector
 

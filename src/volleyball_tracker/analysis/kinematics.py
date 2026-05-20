@@ -92,7 +92,6 @@ def _smooth(arr: np.ndarray, window: int = 5) -> np.ndarray:
 
 
 def _landmark_series(tracked: list[Person | None], idx: int) -> np.ndarray:
-    """Per-frame xy positions for a single landmark; NaN where missing or invisible."""
     out = np.full((len(tracked), 2), np.nan, dtype=np.float64)
     for i, p in enumerate(tracked):
         if p is not None and p.visibility[idx] > MIN_LANDMARK_VISIBILITY:
@@ -145,7 +144,6 @@ def _speed_series(positions_px: np.ndarray, fps: float, px_per_m: float) -> np.n
 
 
 def _person_height_px(p: Person) -> float:
-    """Visible head-to-foot span in pixels."""
     head_candidates = [
         p.points[idx, 1]
         for idx in (NOSE, LEFT_EAR, RIGHT_EAR)

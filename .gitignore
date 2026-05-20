@@ -1,9 +1,7 @@
-# --- Project-specific ----------------------------------------------------------
 output_videos/
 cache/
 samples_raw/
 
-# Videos: ignore everything except curated test clips
 *.mp4
 *.mov
 *.webm
@@ -12,7 +10,6 @@ samples_raw/
 *.part
 !test_videos/*.mp4
 
-# ML models: ignore by extension, allowlist the pose model that ships with the repo
 *.task
 *.tflite
 *.pb
@@ -20,24 +17,18 @@ samples_raw/
 *.onnx
 !models/pose_landmarker_full.task
 
-# Cached pose/ball data
 *.npz
 *.pkl
 
-# Secrets
 .env
 .envrc
-
-# Local tool settings
 .claude/settings.local.json
 
-# --- Python --------------------------------------------------------------------
 __pycache__/
 *.py[codz]
 *$py.class
 *.so
 
-# Packaging / build artifacts
 .Python
 build/
 dist/
@@ -45,7 +36,6 @@ dist/
 *.egg
 share/python-wheels/
 
-# Test / coverage
 .coverage
 .coverage.*
 htmlcov/
@@ -53,20 +43,15 @@ htmlcov/
 .tox/
 .nox/
 
-# Type checkers / linters
 .mypy_cache/
 .pyre/
 .pytype/
 .ruff_cache/
 
-# Virtual envs
 .venv/
 venv/
 env/
 
-# Editors
 .vscode/
 .idea/
-
-# Notebooks
 .ipynb_checkpoints/

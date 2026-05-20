@@ -1,4 +1,3 @@
-"""Volleyball detection per frame via YOLOv8 (COCO 'sports ball' class)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,8 +24,6 @@ class BallDetection:
 
 
 class BallDetector:
-    """YOLOv8 wrapper that returns at most one ball detection per frame."""
-
     def __init__(
         self,
         model_path: str = BALL_MODEL_NAME,
@@ -34,7 +31,8 @@ class BallDetector:
         device: str = "cpu",
         imgsz: int = DEFAULT_BALL_INFER_SIZE,
     ) -> None:
-        from ultralytics import YOLO  # local import: heavy
+        from ultralytics import YOLO
+
         self._model = YOLO(model_path)
         self._conf = conf_threshold
         self._device = device
@@ -104,7 +102,7 @@ def interpolate_missing(
         prev_idx, next_idx = i - 1, j if j < n else None
         if prev_idx >= 0 and next_idx is not None and (j - i) <= max_gap:
             a, b = out[prev_idx], out[next_idx]
-            assert a is not None and b is not None  # for type checker
+            assert a is not None and b is not None
             gap = j - i + 1
             for k, idx in enumerate(range(i, j), start=1):
                 t = k / gap

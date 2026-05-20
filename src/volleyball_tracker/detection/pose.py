@@ -1,4 +1,3 @@
-"""Multi-person pose detection via MediaPipe PoseLandmarker."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -67,8 +66,6 @@ POSE_CONNECTIONS: list[tuple[int, int]] = [
 
 @dataclass
 class Person:
-    """One detected person, with landmarks in pixel coordinates."""
-
     points: np.ndarray
     visibility: np.ndarray
 
@@ -92,7 +89,6 @@ class Person:
         return float(ankle_y - head_y)
 
     def head_circle(self) -> tuple[float, float, float]:
-        """(cx, cy, radius) covering the face region."""
         nose = self.points[NOSE]
         le, re = self.points[LEFT_EAR], self.points[RIGHT_EAR]
         ears_visible = self.visibility[LEFT_EAR] > 0.2 and self.visibility[RIGHT_EAR] > 0.2
@@ -104,8 +100,6 @@ class Person:
 
 
 class PoseDetector:
-    """Stateful wrapper around MediaPipe video-mode pose landmarker."""
-
     def __init__(
         self,
         num_poses: int = DEFAULT_NUM_POSES,

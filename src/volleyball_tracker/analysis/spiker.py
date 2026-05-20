@@ -1,4 +1,3 @@
-"""Identify the spiker (impact frame + track them across all frames)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,8 +13,8 @@ __all__ = ["ImpactInfo", "find_impact", "track_spiker"]
 @dataclass
 class ImpactInfo:
     frame_idx: int
-    person_idx: int                      # index within per_frame_persons[frame_idx]
-    spike_arm: str                       # "left" or "right"
+    person_idx: int
+    spike_arm: str
     distance_px: float
 
 
@@ -24,7 +23,7 @@ def find_impact(
     per_frame_ball: list[BallDetection | None],
     max_radii: float = 6.0,
 ) -> ImpactInfo | None:
-    """Return the (frame, person, arm) tuple with the globally smallest wrist→ball distance."""
+    """Find the closest visible wrist-ball contact."""
     best: ImpactInfo | None = None
     for f, (persons, ball) in enumerate(zip(per_frame_persons, per_frame_ball)):
         if ball is None or not persons:
@@ -34,14 +33,11 @@ def find_impact(
             for arm, idx in (("left", LEFT_WRIST), ("right", RIGHT_WRIST)):
                 if person.visibility[idx] < 0.3:
                     continue
-                wrist = person.points[idx]
-                d = float(np.linalg.norm(wrist - ball_xy))
+                d = float(np.linalg.norm(person.points[idx] - ball_xy))
                 if d > max_radii * ball.radius:
                     continue
                 if best is None or d < best.distance_px:
-                    best = ImpactInfo(
-                        frame_idx=f, person_idx=pi, spike_arm=arm, distance_px=d,
-                    )
+                    best = ImpactInfo(f, pi, arm, d)
     return best
 
 
@@ -49,7 +45,7 @@ def track_spiker(
     per_frame_persons: list[list[Person]],
     impact: ImpactInfo,
 ) -> list[Person | None]:
-    """Propagate the spiker identity from the impact frame outward via centroid matching."""
+    """Propagate the impact player identity through the clip."""
     n = len(per_frame_persons)
     tracked: list[Person | None] = [None] * n
     tracked[impact.frame_idx] = per_frame_persons[impact.frame_idx][impact.person_idx]
@@ -68,7 +64,6 @@ def track_spiker(
                 best_c = c
         return best_c
 
-    # Forward
     last = tracked[impact.frame_idx]
     for f in range(impact.frame_idx + 1, n):
         if last is None:
@@ -78,7 +73,6 @@ def track_spiker(
         if nxt is not None:
             last = nxt
 
-    # Backward
     last = tracked[impact.frame_idx]
     for f in range(impact.frame_idx - 1, -1, -1):
         if last is None:

@@ -1,4 +1,3 @@
-"""End-to-end pipeline: detect, identify spiker, compute metrics, render MP4."""
 from __future__ import annotations
 
 import logging
@@ -35,7 +34,6 @@ def _play_area_bbox(
     frame_w: int,
     frame_h: int,
 ) -> tuple[int, int, int, int] | None:
-    """Bounding box spanning all detected persons in the clip plus margin."""
     xs1, ys1, xs2, ys2 = [], [], [], []
     for persons in per_frame_persons:
         for p in persons:
@@ -64,7 +62,6 @@ def _open_writer(path: str, fps: float, size: tuple[int, int]) -> cv2.VideoWrite
 
 
 def run(cfg: PipelineConfig) -> SpikeMetrics:
-    """Run the full pipeline and write the annotated video. Returns final metrics."""
     cap = cv2.VideoCapture(cfg.input_path)
     if not cap.isOpened():
         raise FileNotFoundError(f"Could not open {cfg.input_path}")
