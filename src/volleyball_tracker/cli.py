@@ -6,7 +6,12 @@ import re
 import sys
 from pathlib import Path
 
-from .config import DEFAULT_PLAYER_HEIGHT_M, DEFAULT_PLAYER_MASS_KG
+from .config import (
+    BALL_MODEL_NAME,
+    DEFAULT_BALL_INFER_SIZE,
+    DEFAULT_PLAYER_HEIGHT_M,
+    DEFAULT_PLAYER_MASS_KG,
+)
 
 __all__ = ["default_output_path", "main"]
 
@@ -44,6 +49,30 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_PLAYER_MASS_KG,
         help="Spiker mass in kg (default: %(default).0f).",
     )
+    p.add_argument(
+        "--model",
+        default=BALL_MODEL_NAME,
+        help="Ball detector weights file (default: %(default)s).",
+    )
+    p.add_argument(
+        "--imgsz",
+        type=int,
+        default=DEFAULT_BALL_INFER_SIZE,
+        help="YOLO inference image size (default: %(default)d).",
+    )
+    p.add_argument(
+        "--device",
+        default=None,
+        help="Force inference device: cuda, mps, or cpu. Auto-detect by default.",
+    )
+    p.add_argument(
+        "--roi",
+        action="store_true",
+        help=(
+            "Enable ROI-tracked ball inference (~1.5x faster, but can lock onto "
+            "static false positives on offline clips). Recommended for live mode."
+        ),
+    )
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose (debug) logging.")
     return p
 
@@ -62,6 +91,10 @@ def main(argv: list[str] | None = None) -> int:
         output_path=output_path,
         player_height_m=args.height,
         player_mass_kg=args.mass,
+        ball_model=args.model,
+        ball_imgsz=args.imgsz,
+        device=args.device,
+        roi_tracking=args.roi,
     )
     try:
         run(cfg)
