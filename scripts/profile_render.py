@@ -36,7 +36,7 @@ def main() -> int:
         persons_pf.append(persons); ball_pf.append(ball); i += 1
     cap.release(); pose_det.close()
     ball_pf = interpolate_missing(ball_pf)
-    impact = find_impact(persons_pf, ball_pf)
+    impact = find_impact(persons_pf, ball_pf, fps=fps)
     tracked = track_spiker(persons_pf, impact)
     metrics = compute_kinematics(tracked, ball_pf, impact, fps)
     print(f"detected, impact at frame {impact.frame_idx}")

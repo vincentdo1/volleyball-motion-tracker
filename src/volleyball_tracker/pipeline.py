@@ -35,6 +35,8 @@ from .detection.ball import (
     interpolate_missing,
     reject_near_faces,
     reject_static_clusters,
+    reject_trajectory_outliers,
+    resolution_scale,
 )
 from .detection.pose import Person, PoseDetector
 from .rendering.overlay import render_frame
@@ -189,11 +191,12 @@ def _detect_pass(
     pose_det: PoseDetector,
     ball_det: BallDetector,
     roi_tracking: bool,
+    res_scale: float,
 ) -> tuple[list[list[Person]], list[BallDetection | None], int]:
     """Pass 1: stream frames, accumulate per-frame detections only."""
     per_frame_persons: list[list[Person]] = []
     per_frame_ball: list[BallDetection | None] = []
-    tracker = BallTrackingState() if roi_tracking else None
+    tracker = BallTrackingState(stuck_px=3.0 * res_scale) if roi_tracking else None
 
     log.info("Pass 1/2: detecting players and ball ...")
     t0 = time.time()
@@ -290,10 +293,12 @@ def run(cfg: PipelineConfig) -> SpikeMetrics:
         cfg.ball_model, cfg.ball_imgsz, ball_det.device,
     )
 
+    res_scale = resolution_scale(width, height)
     try:
         per_frame_persons, per_frame_ball, n = _detect_pass(
             cap, fps, total_frames, pose_det, ball_det,
             roi_tracking=cfg.roi_tracking,
+            res_scale=res_scale,
         )
     finally:
         cap.release()
@@ -306,14 +311,22 @@ def run(cfg: PipelineConfig) -> SpikeMetrics:
             if b is not None and not (x1 <= b.cx <= x2 and y1 <= b.cy <= y2):
                 per_frame_ball[i] = None
     # Filter persistent static false positives (e.g. overhead lights mistaken
-    # for a ball) before interpolation, so we don't propagate them.
-    cleaned = reject_static_clusters(per_frame_ball)
-    n_removed = sum(1 for a, b in zip(per_frame_ball, cleaned) if a is not None and b is None)
-    if n_removed:
-        log.info("  Rejected %d static false-positive ball detections", n_removed)
-    per_frame_ball = interpolate_missing(cleaned)
+    # for a ball) before interpolation, so we don't propagate them. Bin size
+    # scales with frame resolution so a stuck detection on 1080p that jitters
+    # by 8-10 px still bins together.
+    cleaned = reject_static_clusters(per_frame_ball, bin_size_px=6.0 * res_scale)
+    n_removed_static = sum(1 for a, b in zip(per_frame_ball, cleaned) if a is not None and b is None)
+    if n_removed_static:
+        log.info("  Rejected %d static false-positive ball detections", n_removed_static)
+    # Drop isolated 'teleport' detections that don't fit smooth-trajectory
+    # neighbors. Works in ball-radii units, so it's resolution-independent.
+    pruned = reject_trajectory_outliers(cleaned)
+    n_removed_outliers = sum(1 for a, b in zip(cleaned, pruned) if a is not None and b is None)
+    if n_removed_outliers:
+        log.info("  Rejected %d off-trajectory ball detections", n_removed_outliers)
+    per_frame_ball = interpolate_missing(pruned)
 
-    impact = find_impact(per_frame_persons, per_frame_ball)
+    impact = find_impact(per_frame_persons, per_frame_ball, fps=fps)
     if impact is None:
         raise RuntimeError("Could not find a hand-ball impact in this clip.")
     log.info(

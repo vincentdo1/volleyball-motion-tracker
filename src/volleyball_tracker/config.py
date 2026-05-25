@@ -32,4 +32,7 @@ PUSHOFF_TIME_S = 0.25
 
 SPORTS_BALL_CLASS_ID = 32
 MAX_BALL_GAP_FRAMES = 30
-DEFAULT_NUM_POSES = 6
+# 8 (was 6) to catch the actual spiker in crowded scenes like a team practice
+# where 6 of the 7+ visible players can saturate the detector and drop the one
+# we actually care about. MediaPipe's per-pose cost is small, so this is cheap.
+DEFAULT_NUM_POSES = 8

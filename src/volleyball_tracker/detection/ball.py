@@ -32,8 +32,23 @@ __all__ = [
     "interpolate_missing",
     "reject_near_faces",
     "reject_static_clusters",
+    "reject_trajectory_outliers",
+    "resolution_scale",
     "pick_inference_device",
 ]
+
+
+def resolution_scale(frame_w: int, frame_h: int) -> float:
+    """Return 1.0 for ~720p inputs (long side 1280) and proportionally larger
+    for higher resolutions.
+
+    Ball-filter thresholds (stuck-pixel tolerance, cluster bin size, ROI window)
+    were originally tuned on 1280x720 landscape clips. On 1080p/4K they need to
+    grow so a static false positive that jitters by 4-5 px between frames still
+    bins together as 'stuck'. Using ``max(w, h)`` keeps the scale consistent
+    between landscape and portrait orientations of the same resolution.
+    """
+    return max(1.0, max(frame_w, frame_h) / 1280.0)
 
 
 @dataclass
@@ -147,19 +162,19 @@ class BallTrackingState:
     """Predicts the next ROI from recent ball positions to amortise YOLO cost.
 
     Robustness rules:
-      * Detections that barely move (||Δp|| < STUCK_PX) across many consecutive
+      * Detections that barely move (||Δp|| < stuck_px) across many consecutive
         frames are almost certainly false positives on static objects (lights,
         markings on a wall). We drop the lock when we see a stuck streak.
       * ROI centre is the *last* observed position, NOT a linear extrapolation —
         extrapolation overshoots badly when the ball reverses at impact.
     """
 
-    STUCK_PX = 3.0
     STUCK_STREAK_LIMIT = 6
 
     last: BallDetection | None = None
     misses: int = 0
     stuck_streak: int = 0
+    stuck_px: float = 3.0  # set by caller from _resolution_scale * 3.0 for HD/4K
 
     def update(self, detection: BallDetection | None) -> None:
         if detection is None:
@@ -173,7 +188,7 @@ class BallTrackingState:
         if self.last is not None:
             dx = detection.cx - self.last.cx
             dy = detection.cy - self.last.cy
-            if (dx * dx + dy * dy) < (self.STUCK_PX * self.STUCK_PX):
+            if (dx * dx + dy * dy) < (self.stuck_px * self.stuck_px):
                 self.stuck_streak += 1
                 if self.stuck_streak >= self.STUCK_STREAK_LIMIT:
                     # Treat as a static false positive: drop the lock so the
@@ -213,6 +228,9 @@ def reject_static_clusters(
     crossings on a wall) for many frames. A real volleyball almost never sits
     at one pixel for that long; any (binned) location appearing in >=
     ``min_count`` frames is treated as a static false positive and removed.
+
+    Callers on high-resolution clips should scale ``bin_size_px`` upward (a 6 px
+    bin at 720p is the same fraction of frame as ~16 px at 1080p portrait).
     """
     if not detections:
         return list(detections)
@@ -231,6 +249,63 @@ def reject_static_clusters(
         if len(indices) >= min_count:
             for i in indices:
                 out[i] = None
+    return out
+
+
+def reject_trajectory_outliers(
+    detections: list[BallDetection | None],
+    max_jump_radii: float = 15.0,
+) -> list[BallDetection | None]:
+    """Drop isolated detections that 'teleport' relative to nearby frames.
+
+    A real ball follows a smooth trajectory. For each detection, check the
+    linear interpolation between valid neighbors at offset ±2 frames (not ±1)
+    — skipping the *immediate* neighbor is what prevents a single off-trajectory
+    detection from poisoning the check for its own neighbors. Reject when the
+    candidate is more than ``max_jump_radii`` ball radii away from the
+    prediction.
+
+    Ball-radius normalization makes the threshold resolution-independent: a
+    real ball at 30 px/frame on a 1080p clip is the same physical speed as one
+    at 20 px/frame on 720p. ``max_jump_radii=15`` is generous — we only catch
+    obvious teleports (heads, jersey numbers, line markers briefly misclassed),
+    not legitimate fast motion.
+    """
+    n = len(detections)
+    out = list(detections)
+    if n < 5:
+        return out
+    valid_idx = [i for i, d in enumerate(out) if d is not None]
+    if len(valid_idx) < 5:
+        return out
+
+    to_drop: list[int] = []
+    for k in range(len(valid_idx)):
+        i = valid_idx[k]
+        # Use neighbors at offset 2 so a single outlier at k±1 can't pull the
+        # interpolation toward itself. Fall back to the nearest neighbors only
+        # when we don't have offset-2 ones (clip boundaries).
+        prev_k = k - 2 if k - 2 >= 0 else (k - 1 if k - 1 >= 0 else None)
+        next_k = k + 2 if k + 2 < len(valid_idx) else (k + 1 if k + 1 < len(valid_idx) else None)
+        if prev_k is None or next_k is None:
+            continue
+        prev_i, next_i = valid_idx[prev_k], valid_idx[next_k]
+        # Skip if the spanning gap is too wide — extrapolation gets unstable
+        # and would falsely flag legitimate fast motion across a gap.
+        if next_i - prev_i > 8:
+            continue
+        b = out[i]
+        prev_b = out[prev_i]
+        next_b = out[next_i]
+        assert b is not None and prev_b is not None and next_b is not None
+        t = (i - prev_i) / (next_i - prev_i)
+        pred_x = prev_b.cx + t * (next_b.cx - prev_b.cx)
+        pred_y = prev_b.cy + t * (next_b.cy - prev_b.cy)
+        dist_px = float(np.hypot(b.cx - pred_x, b.cy - pred_y))
+        if dist_px / max(b.radius, 1.0) > max_jump_radii:
+            to_drop.append(i)
+    for i in to_drop:
+        out[i] = None
     return out
 
 
