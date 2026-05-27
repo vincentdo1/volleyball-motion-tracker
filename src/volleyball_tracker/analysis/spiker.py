@@ -134,6 +134,8 @@ def _candidate_for_person(
 ) -> list[_Candidate]:
     """Score both arms of a single person against the ball at frame ``f``."""
     out: list[_Candidate] = []
+    if getattr(person, "synthetic", False):
+        return out
     person_h = person.pixel_height()
     if not np.isfinite(person_h) or person_h <= 0:
         return out

@@ -36,12 +36,16 @@ from .detection.ball import (
     BallDetector,
     BallTrackingState,
     interpolate_missing,
-    reject_near_faces,
     reject_static_clusters,
     reject_trajectory_outliers,
     resolution_scale,
 )
-from .detection.pose import Person, PoseDetector
+from .detection.pose import (
+    MultiPersonPoseDetector,
+    Person,
+    PoseDetector,
+    PoseDetectorProtocol,
+)
 from .rendering.overlay import ActiveSpiker, render_frame
 
 __all__ = ["PipelineConfig", "PipelineResult", "run"]
@@ -64,6 +68,15 @@ class PipelineConfig:
     # --roi or PipelineConfig(roi_tracking=True). The implementation is ready
     # for the eventual live mode where a fresh lock per session is fine.
     roi_tracking: bool = False
+    # Default: YOLO person bboxes → per-crop MediaPipe Pose, so wide-angle
+    # multi-player game footage tracks 6-12 players instead of MediaPipe's
+    # 1-2. Slower per frame; use multi_person=False to fall back to the
+    # legacy full-frame MediaPipe multi-pose detector on single-spiker
+    # clips where speed matters.
+    multi_person: bool = True
+    # Cap on how many players are pose-detected per frame in multi-person
+    # mode. Past ~12 the gain is marginal and the runtime cost grows.
+    max_people_per_frame: int = 14
 
 
 @dataclass
@@ -196,11 +209,71 @@ def _open_reader(path: str) -> tuple[cv2.VideoCapture, float, int, int, int]:
     return cap, fps, w, h, n
 
 
+def _filter_near_faces(
+    detections: list[BallDetection],
+    head_centers: list[tuple[float, float, float]],
+) -> list[BallDetection]:
+    keep: list[BallDetection] = []
+    for det in detections:
+        in_face = False
+        for hx, hy, hr in head_centers:
+            if (det.cx - hx) ** 2 + (det.cy - hy) ** 2 < (hr + det.radius * 0.5) ** 2:
+                in_face = True
+                break
+        if not in_face:
+            keep.append(det)
+    return keep
+
+
+def _choose_ball_candidate(
+    candidates: list[BallDetection],
+    frame_idx: int,
+    last_ball: BallDetection | None,
+    last_ball_idx: int,
+    prev_ball: BallDetection | None,
+    prev_ball_idx: int,
+    res_scale: float,
+) -> BallDetection | None:
+    """Pick a ball detection using trajectory continuity, not confidence alone."""
+    if not candidates:
+        return None
+    if last_ball is None or frame_idx - last_ball_idx > 18:
+        return max(candidates, key=lambda det: det.conf)
+
+    gap = max(1, frame_idx - last_ball_idx)
+    pred_x, pred_y = last_ball.cx, last_ball.cy
+    if prev_ball is not None and last_ball_idx > prev_ball_idx:
+        dt = last_ball_idx - prev_ball_idx
+        vx = (last_ball.cx - prev_ball.cx) / dt
+        vy = (last_ball.cy - prev_ball.cy) / dt
+        pred_x += vx * gap
+        pred_y += vy * gap
+
+    base_gate = max(90.0 * res_scale, last_ball.radius * 12.0)
+    gate = base_gate * min(gap, 6) ** 0.65
+    scored: list[tuple[float, BallDetection]] = []
+    for det in candidates:
+        dist = float(np.hypot(det.cx - pred_x, det.cy - pred_y))
+        if dist > gate:
+            continue
+        radius_penalty = abs(det.radius - last_ball.radius) / max(last_ball.radius, 1.0)
+        cost = dist / max(gate, 1.0) + 0.20 * radius_penalty - 0.35 * det.conf
+        scored.append((cost, det))
+    if scored:
+        return min(scored, key=lambda item: item[0])[1]
+
+    # After a longer miss, allow a fresh lock; short far-away detections are
+    # more likely false positives and are better left for interpolation.
+    if gap > 8:
+        return max(candidates, key=lambda det: det.conf)
+    return None
+
+
 def _detect_pass(
     cap: cv2.VideoCapture,
     fps: float,
     total_frames: int,
-    pose_det: PoseDetector,
+    pose_det: PoseDetectorProtocol,
     ball_det: BallDetector,
     roi_tracking: bool,
     res_scale: float,
@@ -209,6 +282,10 @@ def _detect_pass(
     per_frame_persons: list[list[Person]] = []
     per_frame_ball: list[BallDetection | None] = []
     tracker = BallTrackingState(stuck_px=3.0 * res_scale) if roi_tracking else None
+    last_ball: BallDetection | None = None
+    prev_ball: BallDetection | None = None
+    last_ball_idx = -1
+    prev_ball_idx = -1
 
     log.info("Pass 1/2: detecting players and ball ...")
     t0 = time.time()
@@ -229,9 +306,23 @@ def _detect_pass(
         else:
             candidates = ball_det.detect_all(frame)
 
-        ball = reject_near_faces(candidates, head_circles)
+        candidates = _filter_near_faces(candidates, head_circles)
+        ball = _choose_ball_candidate(
+            candidates,
+            idx,
+            last_ball,
+            last_ball_idx,
+            prev_ball,
+            prev_ball_idx,
+            res_scale,
+        )
         if tracker is not None:
             tracker.update(ball)
+        if ball is not None:
+            prev_ball = last_ball
+            prev_ball_idx = last_ball_idx
+            last_ball = ball
+            last_ball_idx = idx
 
         per_frame_persons.append(persons)
         per_frame_ball.append(ball)
@@ -372,7 +463,6 @@ def run(cfg: PipelineConfig) -> PipelineResult:
     cap, fps, width, height, total_frames = _open_reader(cfg.input_path)
     log.info("Input: %dx%d @ %.1ffps, %d frames", width, height, fps, total_frames)
 
-    pose_det = PoseDetector()
     ball_det = BallDetector(
         model_path=cfg.ball_model,
         imgsz=cfg.ball_imgsz,
@@ -382,6 +472,24 @@ def run(cfg: PipelineConfig) -> PipelineResult:
         "Ball detector: %s @ imgsz=%d on %s",
         cfg.ball_model, cfg.ball_imgsz, ball_det.device,
     )
+
+    pose_det: PoseDetectorProtocol
+    if cfg.multi_person:
+        # Reuse the YOLO model already loaded for ball detection — saves
+        # loading the weights twice and lets us pick up GPU placement once.
+        pose_det = MultiPersonPoseDetector(
+            person_model_path=cfg.ball_model,
+            device=cfg.device,
+            max_people_per_frame=cfg.max_people_per_frame,
+            existing_yolo_model=ball_det._model,  # noqa: SLF001
+        )
+        log.info(
+            "Pose detector: YOLO person + MediaPipe Pose (up to %d people / frame) on %s",
+            cfg.max_people_per_frame, pose_det.device,
+        )
+    else:
+        pose_det = PoseDetector()
+        log.info("Pose detector: MediaPipe multi-pose (single-person fallback)")
 
     res_scale = resolution_scale(width, height)
     try:

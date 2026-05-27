@@ -22,6 +22,7 @@ from volleyball_tracker.detection.pose import (
     RIGHT_SHOULDER,
     RIGHT_WRIST,
     Person,
+    _person_from_box,
 )
 
 
@@ -93,3 +94,16 @@ def test_new_person_entering_clip_gets_new_track() -> None:
     shorter = min(tracks, key=lambda t: t.frames_seen)
     assert longer.frames_seen == n_frames
     assert shorter.frames_seen == n_frames - 10
+
+
+def test_bbox_fallback_people_are_trackable() -> None:
+    per_frame = [
+        [_person_from_box((100 + f * 3, 80, 180 + f * 3, 300))]
+        for f in range(12)
+    ]
+
+    tracks = build_tracks(per_frame, min_frames=1)
+
+    assert len(tracks) == 1
+    assert tracks[0].frames_seen == 12
+    assert tracks[0].persons[0].synthetic

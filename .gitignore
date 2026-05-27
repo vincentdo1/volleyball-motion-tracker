@@ -1,6 +1,8 @@
 output_videos/
 cache/
 samples_raw/
+Ultralytics/
+.ultralytics/
 
 *.mp4
 *.mov

@@ -12,6 +12,7 @@ from volleyball_tracker.detection.pose import (
     RIGHT_ANKLE, RIGHT_EAR, RIGHT_ELBOW, RIGHT_FOOT, RIGHT_HEEL, RIGHT_HIP,
     RIGHT_SHOULDER, RIGHT_WRIST,
     Person,
+    _person_from_box,
 )
 
 
@@ -67,6 +68,26 @@ def test_no_spike_returns_no_events() -> None:
     ]
     tracks = build_tracks(per_frame_persons)
     events = find_spike_events(tracks, per_frame_ball, fps=30.0)
+    assert events == []
+
+
+def test_synthetic_fallback_people_do_not_create_spike_events() -> None:
+    n = 24
+    per_frame_persons = [[_person_from_box((180, 100, 300, 420))] for _ in range(n)]
+    wrist = per_frame_persons[0][0].points[RIGHT_WRIST]
+    per_frame_ball: list[BallDetection | None] = [
+        BallDetection(
+            cx=float(wrist[0] + max(0, f - 10) * 40.0),
+            cy=float(wrist[1] + max(0, f - 10) * 4.0),
+            radius=12.0,
+            conf=0.9,
+        )
+        for f in range(n)
+    ]
+
+    tracks = build_tracks(per_frame_persons)
+    events = find_spike_events(tracks, per_frame_ball, fps=30.0)
+
     assert events == []
 
 
