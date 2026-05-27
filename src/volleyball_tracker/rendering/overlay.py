@@ -1,3 +1,12 @@
+"""Frame rendering: skeletons, ball, HUD callouts, and analytics chips.
+
+Multi-person model: every detected player is drawn (faintly when idle, fully
+when active). At any frame the "active spiker" is the tracked player whose
+spike event is currently closest in time; their kinematics drive the HUD
+callouts, the same as the single-spiker overlay used to. Frames with no
+spike events still render the full multi-person tracking but skip the
+analytics callouts.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,7 +16,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from ..analysis.kinematics import FrameMetrics, SpikeMetrics
-from ..analysis.spiker import ImpactInfo
+from ..analysis.spiker import ImpactInfo, SpikeEvent
+from ..analysis.tracking import PersonTrack
 from ..detection.ball import BallDetection
 from ..detection.pose import (
     LEFT_ANKLE, LEFT_ELBOW, LEFT_HIP, LEFT_SHOULDER, LEFT_WRIST,
@@ -15,11 +25,12 @@ from ..detection.pose import (
     RIGHT_ANKLE, RIGHT_ELBOW, RIGHT_HIP, RIGHT_SHOULDER, RIGHT_WRIST,
 )
 
-__all__ = ["render_frame"]
+__all__ = ["render_frame", "ActiveSpiker"]
 
 
 BG_TINT_BGR = (38, 22, 12)
 BONE_BGR = (250, 240, 235)
+IDLE_BONE_BGR = (160, 170, 180)
 ACCENT_BGR = (255, 200, 30)
 ACCENT_RGB = (30, 200, 255)
 WHITE_RGB = (250, 252, 255)
@@ -28,6 +39,7 @@ LABEL_RGB = (210, 222, 238)
 UNIT_RGB = (210, 222, 235)
 SUB_RGB = (140, 160, 180)
 BALL_HALO_BGR = (250, 240, 235)
+IDLE_DOT_BGR = (180, 180, 200)
 
 _BOLD_PATHS = ["C:\\Windows\\Fonts\\segoeuib.ttf", "C:\\Windows\\Fonts\\arialbd.ttf"]
 _REG_PATHS = ["C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\arial.ttf"]
@@ -52,6 +64,7 @@ def _font_set(frame_w: int) -> dict[str, ImageFont.FreeTypeFont]:
         "title":    _load_font(_BOLD_PATHS, max(15, int(18 * scale))),
         "subtitle": _load_font(_REG_PATHS,  max(11, int(13 * scale))),
         "chip":     _load_font(_BOLD_PATHS, max(11, int(13 * scale))),
+        "id":       _load_font(_BOLD_PATHS, max(10, int(12 * scale))),
     }
 
 
@@ -60,6 +73,23 @@ def _textlen(d: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) ->
         return int(d.textlength(text, font=font))
     except AttributeError:
         return int(font.getbbox(text)[2])
+
+
+@dataclass
+class ActiveSpiker:
+    """Per-frame snapshot of which tracked player owns the analytics overlay.
+
+    ``person`` is the active spiker's pose at the current frame.
+    ``event`` and ``metrics`` come from that spiker's spike event so the HUD
+    can show arm-swing/jump/spike numbers from the actual impact, even on
+    frames that are seconds before or after the impact itself.
+    """
+
+    track_id: int
+    person: Person
+    event: SpikeEvent
+    metrics: SpikeMetrics
+    frame_metrics: FrameMetrics
 
 
 def _build_spiker_mask(person: Person, shape: tuple[int, ...]) -> np.ndarray:
@@ -84,29 +114,27 @@ def _build_spiker_mask(person: Person, shape: tuple[int, ...]) -> np.ndarray:
 
 
 def _apply_isolation(frame_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Blend the spiker region (full colour) over a desaturated + tinted background.
+    """Blend the active spiker region (full colour) over a desaturated +
+    tinted background.
 
-    Stays in uint8 throughout (no float32 round-trips) and uses cv2 primitives,
-    which is ~4x faster than the equivalent numpy float pipeline.
+    Stays in uint8 throughout (no float32 round-trips) and uses cv2
+    primitives, which is ~4x faster than the equivalent numpy float pipeline.
     """
-    # Desaturated + navy-tinted background, pre-darkened.
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     gray3 = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
     tint = np.full_like(frame_bgr, BG_TINT_BGR)
-    bg = cv2.addWeighted(gray3, 0.43, tint, 0.35, 0)  # 0.55*0.78, 0.45*0.78
+    bg = cv2.addWeighted(gray3, 0.43, tint, 0.35, 0)
 
-    # 8-bit alpha mask, single allocation per call.
     alpha = (mask * 255).astype(np.uint8)
     alpha_3 = cv2.merge((alpha, alpha, alpha))
     inv = cv2.bitwise_not(alpha_3)
 
-    # out = frame * α + bg * (1 - α), entirely in uint8.
     fg_part = cv2.multiply(frame_bgr, alpha_3, scale=1 / 255.0)
     bg_part = cv2.multiply(bg, inv, scale=1 / 255.0)
     return cv2.add(fg_part, bg_part)
 
 
-def _draw_skeleton(frame: np.ndarray, person: Person, impact_arm: str | None) -> None:
+def _draw_active_skeleton(frame: np.ndarray, person: Person, impact_arm: str | None) -> None:
     pts = person.points.astype(int)
     vis = person.visibility
     for a, b in POSE_CONNECTIONS:
@@ -126,6 +154,49 @@ def _draw_skeleton(frame: np.ndarray, person: Person, impact_arm: str | None) ->
     if vis[SH] > 0.2 and vis[EL] > 0.2 and vis[WR] > 0.2:
         cv2.line(frame, tuple(pts[SH]), tuple(pts[EL]), ACCENT_BGR, 2, cv2.LINE_AA)
         cv2.line(frame, tuple(pts[EL]), tuple(pts[WR]), ACCENT_BGR, 2, cv2.LINE_AA)
+
+
+def _draw_idle_skeleton(frame: np.ndarray, person: Person) -> None:
+    """Faint skeleton for non-active tracked people."""
+    pts = person.points.astype(int)
+    vis = person.visibility
+    for a, b in POSE_CONNECTIONS:
+        if vis[a] < 0.2 or vis[b] < 0.2:
+            continue
+        cv2.line(frame, tuple(pts[a]), tuple(pts[b]), IDLE_BONE_BGR, 1, cv2.LINE_AA)
+    for idx in (LEFT_WRIST, RIGHT_WRIST, NOSE):
+        if vis[idx] >= 0.2:
+            cv2.circle(frame, tuple(pts[idx]), 2, IDLE_DOT_BGR, -1, cv2.LINE_AA)
+
+
+def _draw_track_id(
+    d: ImageDraw.ImageDraw, person: Person, track_id: int, is_active: bool,
+    fonts: dict, frame_w: int, frame_h: int,
+) -> None:
+    """Tiny ID chip above each tracked player so the user can see multiple
+    persons are being followed separately."""
+    if person.visibility[NOSE] < 0.2:
+        return
+    nose = person.points[NOSE]
+    text = f"P{track_id}"
+    tw = _textlen(d, text, fonts["id"])
+    pad = 4
+    box_w = tw + 2 * pad
+    box_h = 18
+    if box_w >= frame_w - 4 or box_h >= frame_h - 4:
+        return
+    # Clamp the chip inside the frame regardless of where the nose is.
+    x_centre = float(nose[0])
+    x1 = int(round(x_centre - box_w / 2))
+    x1 = max(2, min(x1, frame_w - 2 - box_w))
+    y1 = int(float(nose[1])) - 24
+    y1 = max(2, min(y1, frame_h - 2 - box_h))
+    x2 = x1 + box_w
+    y2 = y1 + box_h
+    color = ACCENT_RGB if is_active else (180, 195, 215)
+    bg = (10, 14, 22, 170) if is_active else (10, 14, 22, 110)
+    d.rectangle([(x1, y1), (x2, y2)], fill=bg, outline=color, width=1)
+    d.text((x1 + pad, y1 + 1), text, font=fonts["id"], fill=color)
 
 
 def _draw_ball(frame: np.ndarray, ball: BallDetection) -> None:
@@ -260,13 +331,14 @@ def _draw_callout(d: ImageDraw.ImageDraw, item: PlacedCallout, fonts: dict) -> N
 
 
 def _build_callouts(
-    person: Person,
+    active: ActiveSpiker,
     ball: BallDetection | None,
-    metrics: SpikeMetrics,
-    fm: FrameMetrics,
-    impact: ImpactInfo,
     frame_idx: int,
 ) -> list[Callout]:
+    person = active.person
+    impact = active.event.as_impact_info()
+    metrics = active.metrics
+    fm = active.frame_metrics
     is_right = impact.spike_arm == "right"
     EL = RIGHT_ELBOW if is_right else LEFT_ELBOW
     WR = RIGHT_WRIST if is_right else LEFT_WRIST
@@ -334,12 +406,23 @@ def _build_callouts(
 
 
 def _draw_header(
-    d: ImageDraw.ImageDraw, w: int, frame_idx: int, fps: float,
-    fm: FrameMetrics, is_impact_now: bool, fonts: dict,
+    d: ImageDraw.ImageDraw,
+    w: int,
+    frame_idx: int,
+    fps: float,
+    active: ActiveSpiker | None,
+    n_tracked: int,
+    n_events: int,
+    event_ordinal: int | None,
+    is_impact_now: bool,
+    is_airborne: bool,
+    fonts: dict,
 ) -> None:
     d.text((24, 18), "SPIKE  ANALYSIS", font=fonts["title"], fill=WHITE_RGB)
-    d.text((24, 40), f"t = {frame_idx/fps:5.2f} s  |  frame {frame_idx:>4d}",
-           font=fonts["subtitle"], fill=DIM_RGB)
+    sub = f"t = {frame_idx/fps:5.2f} s  |  frame {frame_idx:>4d}  |  {n_tracked} tracked"
+    if n_events == 0:
+        sub += "  |  no spike detected"
+    d.text((24, 40), sub, font=fonts["subtitle"], fill=DIM_RGB)
     d.line([(24, 62), (160, 62)], fill=ACCENT_RGB, width=1)
 
     chip_x = w - 24
@@ -355,11 +438,110 @@ def _draw_header(
 
     if is_impact_now:
         chip("IMPACT", ACCENT_RGB)
-    if fm.is_airborne:
+    if is_airborne:
         chip("AIRBORNE", LABEL_RGB)
+    if active is not None and n_events > 0:
+        ordinal = event_ordinal if event_ordinal is not None else 1
+        chip(f"SPIKE {ordinal}/{n_events}  P{active.track_id}", ACCENT_RGB)
 
 
 def render_frame(
+    frame_bgr: np.ndarray,
+    other_persons: list[Person],
+    active: ActiveSpiker | None,
+    ball: BallDetection | None,
+    ball_trail: list[tuple[int, int, float]],
+    frame_idx: int,
+    fps: float,
+    *,
+    n_tracked: int,
+    n_events: int,
+    event_ordinal: int | None,
+    show_track_ids: bool = True,
+    other_track_ids: list[int] | None = None,
+) -> np.ndarray:
+    """Render one annotated output frame.
+
+    Parameters
+    ----------
+    frame_bgr
+        Source frame from the input clip.
+    other_persons
+        Tracked non-active players visible in this frame (drawn faintly).
+    active
+        The currently-highlighted spiker plus the metrics that drive the HUD,
+        or ``None`` if no spike events were found in the clip.
+    ball, ball_trail
+        Ball detection and recent trail.
+    frame_idx, fps
+        Current frame index and clip framerate.
+    n_tracked, n_events, event_ordinal
+        Header chip info: total tracked players, total spike events in the
+        clip, and which event (1-indexed) is currently active.
+    show_track_ids
+        Whether to label each tracked player with a small ID chip.
+    other_track_ids
+        Track IDs paired with ``other_persons`` for the ID chips.
+    """
+    h, w = frame_bgr.shape[:2]
+    out = frame_bgr.copy()
+    fonts = _font_set(w)
+
+    if active is not None:
+        mask = _build_spiker_mask(active.person, out.shape)
+        out = _apply_isolation(out, mask)
+
+    if ball_trail:
+        _draw_ball_trail(out, ball_trail)
+
+    for p in other_persons:
+        _draw_idle_skeleton(out, p)
+
+    if active is not None:
+        _draw_active_skeleton(out, active.person, active.event.spike_arm)
+    if ball is not None:
+        _draw_ball(out, ball)
+
+    rgb = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(rgb)
+    d = ImageDraw.Draw(pil, "RGBA")
+
+    if show_track_ids:
+        if other_track_ids is None:
+            other_track_ids = [0] * len(other_persons)
+        for p, tid in zip(other_persons, other_track_ids):
+            _draw_track_id(d, p, tid, is_active=False, fonts=fonts, frame_w=w, frame_h=h)
+        if active is not None:
+            _draw_track_id(d, active.person, active.track_id, is_active=True,
+                           fonts=fonts, frame_w=w, frame_h=h)
+
+    is_impact_now = False
+    is_airborne = False
+    if active is not None:
+        is_impact_now = abs(frame_idx - active.event.frame_idx) <= 1
+        is_airborne = active.frame_metrics.is_airborne
+        callouts = _build_callouts(active, ball, frame_idx)
+        placed = _layout_callouts(d, callouts, active.person.bbox(), w, h, fonts)
+        for item in placed:
+            _draw_callout(d, item, fonts)
+
+    _draw_header(
+        d, w, frame_idx, fps,
+        active=active,
+        n_tracked=n_tracked,
+        n_events=n_events,
+        event_ordinal=event_ordinal,
+        is_impact_now=is_impact_now,
+        is_airborne=is_airborne,
+        fonts=fonts,
+    )
+
+    return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
+
+# Backwards-compatible single-spiker wrapper retained for any direct callers
+# of the old API.
+def render_frame_legacy(
     frame_bgr: np.ndarray,
     tracked_person: Person | None,
     ball: BallDetection | None,
@@ -369,32 +551,29 @@ def render_frame(
     frame_idx: int,
     fps: float,
 ) -> np.ndarray:
-    h, w = frame_bgr.shape[:2]
-    out = frame_bgr.copy()
-    fonts = _font_set(w)
-
-    if tracked_person is not None:
-        mask = _build_spiker_mask(tracked_person, out.shape)
-        out = _apply_isolation(out, mask)
-
-    if ball_trail:
-        _draw_ball_trail(out, ball_trail)
-
-    if tracked_person is not None:
-        _draw_skeleton(out, tracked_person, impact.spike_arm)
-    if ball is not None:
-        _draw_ball(out, ball)
-
-    rgb = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
-    pil = Image.fromarray(rgb)
-    d = ImageDraw.Draw(pil, "RGBA")
-
-    if tracked_person is not None:
-        fm = metrics.per_frame[frame_idx]
-        callouts = _build_callouts(tracked_person, ball, metrics, fm, impact, frame_idx)
-        placed = _layout_callouts(d, callouts, tracked_person.bbox(), w, h, fonts)
-        for item in placed:
-            _draw_callout(d, item, fonts)
-        _draw_header(d, w, frame_idx, fps, fm, abs(frame_idx - impact.frame_idx) <= 1, fonts)
-
-    return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+    """Single-spiker shim. New code should call ``render_frame``."""
+    if tracked_person is None:
+        active = None
+    else:
+        fm = metrics.per_frame[frame_idx] if 0 <= frame_idx < len(metrics.per_frame) else FrameMetrics()
+        ev = SpikeEvent(
+            track_id=0, frame_idx=impact.frame_idx,
+            spike_arm=impact.spike_arm, distance_px=impact.distance_px, score=0.0,
+        )
+        active = ActiveSpiker(
+            track_id=0, person=tracked_person,
+            event=ev, metrics=metrics, frame_metrics=fm,
+        )
+    return render_frame(
+        frame_bgr=frame_bgr,
+        other_persons=[],
+        active=active,
+        ball=ball,
+        ball_trail=ball_trail,
+        frame_idx=frame_idx,
+        fps=fps,
+        n_tracked=1 if tracked_person is not None else 0,
+        n_events=1 if tracked_person is not None else 0,
+        event_ordinal=1 if tracked_person is not None else None,
+        show_track_ids=False,
+    )

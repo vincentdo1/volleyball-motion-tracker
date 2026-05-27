@@ -1,11 +1,13 @@
-"""End-to-end pipeline: detect → identify spiker → compute metrics → render MP4.
+"""End-to-end pipeline: detect everyone → track identities → find spike
+events → compute per-event kinematics → render the MP4.
 
 Two-pass orchestration:
 
   Pass 1: stream frames, run pose + ball detection, keep only the *detections*
           in memory. Frames are NOT buffered — Pass 2 re-reads the source.
-  Pass 2: re-open the source, render each frame with the now-known impact
-          frame and final metrics.
+  Pass 2: re-open the source, render each frame with all tracked players,
+          the active spiker (if any) highlighted, and the active spiker's
+          analytics callouts.
 
 This keeps RAM bounded for long clips and is required for the eventual
 live-streaming mode.
@@ -21,7 +23,8 @@ import cv2
 import numpy as np
 
 from .analysis.kinematics import SpikeMetrics, compute as compute_kinematics
-from .analysis.spiker import find_impact, track_spiker
+from .analysis.spiker import SpikeEvent, find_spike_events
+from .analysis.tracking import PersonTrack, build_tracks
 from .config import (
     BALL_MODEL_NAME,
     DEFAULT_BALL_INFER_SIZE,
@@ -39,9 +42,9 @@ from .detection.ball import (
     resolution_scale,
 )
 from .detection.pose import Person, PoseDetector
-from .rendering.overlay import render_frame
+from .rendering.overlay import ActiveSpiker, render_frame
 
-__all__ = ["PipelineConfig", "run"]
+__all__ = ["PipelineConfig", "PipelineResult", "run"]
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +64,15 @@ class PipelineConfig:
     # --roi or PipelineConfig(roi_tracking=True). The implementation is ready
     # for the eventual live mode where a fresh lock per session is fine.
     roi_tracking: bool = False
+
+
+@dataclass
+class PipelineResult:
+    """Summary of what the pipeline found in the clip."""
+
+    n_tracked: int
+    events: list[SpikeEvent]
+    metrics_by_event: dict[int, SpikeMetrics]  # keyed by SpikeEvent.frame_idx
 
 
 def _play_area_bbox(
@@ -233,21 +245,64 @@ def _detect_pass(
     return per_frame_persons, per_frame_ball, n
 
 
+def _compute_event_metrics(
+    track: PersonTrack,
+    event: SpikeEvent,
+    per_frame_ball: list[BallDetection | None],
+    fps: float,
+    *,
+    player_height_m: float,
+    player_mass_kg: float,
+) -> SpikeMetrics:
+    """Run the existing kinematics computation on a single track + event."""
+    return compute_kinematics(
+        track.persons,
+        per_frame_ball,
+        event.as_impact_info(),
+        fps,
+        player_height_m=player_height_m,
+        player_mass_kg=player_mass_kg,
+    )
+
+
+def _active_event_for_frame(
+    f: int,
+    events: list[SpikeEvent],
+) -> SpikeEvent | None:
+    """Pick the event whose impact frame is closest to ``f``.
+
+    Ties are broken by score (higher wins) and then by event order.
+    """
+    if not events:
+        return None
+    best = events[0]
+    best_dist = abs(events[0].frame_idx - f)
+    for ev in events[1:]:
+        d = abs(ev.frame_idx - f)
+        if d < best_dist or (d == best_dist and ev.score > best.score):
+            best = ev
+            best_dist = d
+    return best
+
+
 def _render_pass(
     cfg: PipelineConfig,
     cap: cv2.VideoCapture,
     fps: float,
     size: tuple[int, int],
-    tracked: list[Person | None],
+    tracks: list[PersonTrack],
     per_frame_ball: list[BallDetection | None],
-    impact,
-    metrics: SpikeMetrics,
+    events: list[SpikeEvent],
+    metrics_by_event: dict[int, SpikeMetrics],
     total_frames: int,
 ) -> None:
-    """Pass 2: re-stream frames from disk and render the overlay."""
+    """Pass 2: re-stream frames from disk and render the multi-person overlay."""
     writer = _open_writer(cfg.output_path, fps, size)
     log.info("Pass 2/2: rendering overlay ...")
     trail: list[tuple[int, int, float]] = []
+    track_by_id = {t.track_id: t for t in tracks}
+    event_order = {ev.frame_idx: i + 1 for i, ev in enumerate(events)}
+
     idx = 0
     try:
         while True:
@@ -259,15 +314,50 @@ def _render_pass(
                 trail.append((int(ball.cx), int(ball.cy), 1.0))
                 if len(trail) > cfg.trail_length:
                     trail.pop(0)
+
+            active_event = _active_event_for_frame(idx, events)
+            active: ActiveSpiker | None = None
+            other_persons: list[Person] = []
+            other_track_ids: list[int] = []
+
+            if active_event is not None:
+                active_track = track_by_id.get(active_event.track_id)
+                if active_track is not None:
+                    p = active_track.persons[idx]
+                    if p is not None:
+                        metrics = metrics_by_event[active_event.frame_idx]
+                        fm = metrics.per_frame[idx] if 0 <= idx < len(metrics.per_frame) else metrics.per_frame[-1]
+                        active = ActiveSpiker(
+                            track_id=active_track.track_id,
+                            person=p,
+                            event=active_event,
+                            metrics=metrics,
+                            frame_metrics=fm,
+                        )
+
+            for t in tracks:
+                p = t.persons[idx]
+                if p is None:
+                    continue
+                if active is not None and t.track_id == active.track_id:
+                    continue
+                other_persons.append(p)
+                other_track_ids.append(t.track_id)
+
+            event_ordinal = event_order.get(active_event.frame_idx) if active_event else None
+
             out = render_frame(
                 frame,
-                tracked[idx],
-                ball,
-                list(trail),
-                metrics,
-                impact,
-                idx,
-                fps,
+                other_persons=other_persons,
+                active=active,
+                ball=ball,
+                ball_trail=list(trail),
+                frame_idx=idx,
+                fps=fps,
+                n_tracked=len(tracks),
+                n_events=len(events),
+                event_ordinal=event_ordinal,
+                other_track_ids=other_track_ids,
             )
             writer.write(out)
             idx += 1
@@ -278,7 +368,7 @@ def _render_pass(
     log.info("Done -> %s", cfg.output_path)
 
 
-def run(cfg: PipelineConfig) -> SpikeMetrics:
+def run(cfg: PipelineConfig) -> PipelineResult:
     cap, fps, width, height, total_frames = _open_reader(cfg.input_path)
     log.info("Input: %dx%d @ %.1ffps, %d frames", width, height, fps, total_frames)
 
@@ -310,68 +400,65 @@ def run(cfg: PipelineConfig) -> SpikeMetrics:
         for i, b in enumerate(per_frame_ball):
             if b is not None and not (x1 <= b.cx <= x2 and y1 <= b.cy <= y2):
                 per_frame_ball[i] = None
-    # Filter persistent static false positives (e.g. overhead lights mistaken
-    # for a ball) before interpolation, so we don't propagate them. Bin size
-    # scales with frame resolution so a stuck detection on 1080p that jitters
-    # by 8-10 px still bins together.
     cleaned = reject_static_clusters(per_frame_ball, bin_size_px=6.0 * res_scale)
     n_removed_static = sum(1 for a, b in zip(per_frame_ball, cleaned) if a is not None and b is None)
     if n_removed_static:
         log.info("  Rejected %d static false-positive ball detections", n_removed_static)
-    # Drop isolated 'teleport' detections that don't fit smooth-trajectory
-    # neighbors. Works in ball-radii units, so it's resolution-independent.
     pruned = reject_trajectory_outliers(cleaned)
     n_removed_outliers = sum(1 for a, b in zip(cleaned, pruned) if a is not None and b is None)
     if n_removed_outliers:
         log.info("  Rejected %d off-trajectory ball detections", n_removed_outliers)
     per_frame_ball = interpolate_missing(pruned)
 
-    impact = find_impact(per_frame_persons, per_frame_ball, fps=fps)
-    if impact is None:
-        raise RuntimeError("Could not find a hand-ball impact in this clip.")
+    tracks = build_tracks(per_frame_persons, max_miss=12, min_frames=4)
     log.info(
-        "Impact: frame=%d t=%.2fs arm=%s dist=%.1fpx",
-        impact.frame_idx,
-        impact.frame_idx / fps,
-        impact.spike_arm,
-        impact.distance_px,
+        "  Tracked %d people (%d with >=10 frames)",
+        len(tracks),
+        sum(1 for t in tracks if t.frames_seen >= 10),
     )
 
-    tracked = track_spiker(per_frame_persons, impact)
-    log.info("Spiker tracked in %d/%d frames", sum(p is not None for p in tracked), n)
+    events = find_spike_events(tracks, per_frame_ball, fps=fps)
+    log.info("  Found %d spike event(s)", len(events))
 
-    metrics = compute_kinematics(
-        tracked,
-        per_frame_ball,
-        impact,
-        fps,
-        player_height_m=cfg.player_height_m,
-        player_mass_kg=cfg.player_mass_kg,
-    )
-    log.info(
-        "  metrics: arm=%.1f deg elbow=%.1f deg hand=%.1f m/s spiker=%.1f m/s "
-        "flight=%.2fs jump=%.2fm Fjump=%.0fN Fspike=%.0fN "
-        "Vball(before/after)=%.1f/%.1f m/s",
-        metrics.arm_swing_angle_deg,
-        metrics.elbow_extension_deg,
-        metrics.peak_hand_speed_mps,
-        metrics.peak_spiker_speed_mps,
-        metrics.flight_time_s,
-        metrics.jump_height_m,
-        metrics.jump_force_N,
-        metrics.spike_force_on_ball_N,
-        metrics.ball_speed_before_mps,
-        metrics.ball_speed_after_mps,
-    )
+    metrics_by_event: dict[int, SpikeMetrics] = {}
+    track_by_id = {t.track_id: t for t in tracks}
+    for ev in events:
+        track = track_by_id.get(ev.track_id)
+        if track is None:
+            continue
+        metrics = _compute_event_metrics(
+            track, ev, per_frame_ball, fps,
+            player_height_m=cfg.player_height_m,
+            player_mass_kg=cfg.player_mass_kg,
+        )
+        metrics_by_event[ev.frame_idx] = metrics
+        log.info(
+            "  Spike P%d @ frame %d t=%.2fs arm=%s "
+            "arm=%.1fdeg elbow=%.1fdeg hand=%.1fm/s spiker=%.1fm/s "
+            "flight=%.2fs jump=%.2fm Fjump=%.0fN Fspike=%.0fN "
+            "Vball(before/after)=%.1f/%.1f m/s",
+            ev.track_id, ev.frame_idx, ev.frame_idx / fps, ev.spike_arm,
+            metrics.arm_swing_angle_deg, metrics.elbow_extension_deg,
+            metrics.peak_hand_speed_mps, metrics.peak_spiker_speed_mps,
+            metrics.flight_time_s, metrics.jump_height_m,
+            metrics.jump_force_N, metrics.spike_force_on_ball_N,
+            metrics.ball_speed_before_mps, metrics.ball_speed_after_mps,
+        )
+    if not events:
+        log.info("  No spike events detected; rendering multi-person tracking only.")
 
     cap2, _, _, _, _ = _open_reader(cfg.input_path)
     try:
         _render_pass(
             cfg, cap2, fps, (width, height),
-            tracked, per_frame_ball, impact, metrics, n,
+            tracks, per_frame_ball, events, metrics_by_event, n,
         )
     finally:
         cap2.release()
 
     _mp4_faststart(cfg.output_path)
-    return metrics
+    return PipelineResult(
+        n_tracked=len(tracks),
+        events=events,
+        metrics_by_event=metrics_by_event,
+    )
