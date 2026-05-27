@@ -30,7 +30,9 @@ __all__ = ["render_frame", "ActiveSpiker"]
 
 BG_TINT_BGR = (38, 22, 12)
 BONE_BGR = (250, 240, 235)
-IDLE_BONE_BGR = (160, 170, 180)
+BONE_OUTLINE_BGR = (20, 18, 14)        # near-black halo for readability on bright frames
+IDLE_BONE_BGR = (235, 215, 110)        # warm cyan-ish, visible on sand and gym floor
+IDLE_OUTLINE_BGR = (15, 18, 25)
 ACCENT_BGR = (255, 200, 30)
 ACCENT_RGB = (30, 200, 255)
 WHITE_RGB = (250, 252, 255)
@@ -39,7 +41,7 @@ LABEL_RGB = (210, 222, 238)
 UNIT_RGB = (210, 222, 235)
 SUB_RGB = (140, 160, 180)
 BALL_HALO_BGR = (250, 240, 235)
-IDLE_DOT_BGR = (180, 180, 200)
+IDLE_DOT_BGR = (50, 220, 255)          # bright cyan dot at wrist/nose for idle players
 
 _BOLD_PATHS = ["C:\\Windows\\Fonts\\segoeuib.ttf", "C:\\Windows\\Fonts\\arialbd.ttf"]
 _REG_PATHS = ["C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\arial.ttf"]
@@ -137,12 +139,19 @@ def _apply_isolation(frame_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
 def _draw_active_skeleton(frame: np.ndarray, person: Person, impact_arm: str | None) -> None:
     pts = person.points.astype(int)
     vis = person.visibility
+    # Two-pass: dark outline + bright fill so the bones read on bright AND
+    # dark backgrounds without depending on the isolation tint.
+    for a, b in POSE_CONNECTIONS:
+        if vis[a] < 0.2 or vis[b] < 0.2:
+            continue
+        cv2.line(frame, tuple(pts[a]), tuple(pts[b]), BONE_OUTLINE_BGR, 3, cv2.LINE_AA)
     for a, b in POSE_CONNECTIONS:
         if vis[a] < 0.2 or vis[b] < 0.2:
             continue
         cv2.line(frame, tuple(pts[a]), tuple(pts[b]), BONE_BGR, 1, cv2.LINE_AA)
     for i in range(len(pts)):
         if vis[i] >= 0.2:
+            cv2.circle(frame, tuple(pts[i]), 3, BONE_OUTLINE_BGR, -1, cv2.LINE_AA)
             cv2.circle(frame, tuple(pts[i]), 2, ACCENT_BGR, -1, cv2.LINE_AA)
 
     if impact_arm is None:
@@ -152,20 +161,32 @@ def _draw_active_skeleton(frame: np.ndarray, person: Person, impact_arm: str | N
     EL = RIGHT_ELBOW if is_right else LEFT_ELBOW
     WR = RIGHT_WRIST if is_right else LEFT_WRIST
     if vis[SH] > 0.2 and vis[EL] > 0.2 and vis[WR] > 0.2:
+        cv2.line(frame, tuple(pts[SH]), tuple(pts[EL]), BONE_OUTLINE_BGR, 4, cv2.LINE_AA)
+        cv2.line(frame, tuple(pts[EL]), tuple(pts[WR]), BONE_OUTLINE_BGR, 4, cv2.LINE_AA)
         cv2.line(frame, tuple(pts[SH]), tuple(pts[EL]), ACCENT_BGR, 2, cv2.LINE_AA)
         cv2.line(frame, tuple(pts[EL]), tuple(pts[WR]), ACCENT_BGR, 2, cv2.LINE_AA)
 
 
 def _draw_idle_skeleton(frame: np.ndarray, person: Person) -> None:
-    """Faint skeleton for non-active tracked people."""
+    """Visible skeleton for non-active tracked people.
+
+    Drawn with a dark outline + bright fill so each idle player is legible on
+    any background — bright sand, dark indoor floors, or wood. Slimmer than
+    the active spiker so the active one still pops.
+    """
     pts = person.points.astype(int)
     vis = person.visibility
+    for a, b in POSE_CONNECTIONS:
+        if vis[a] < 0.2 or vis[b] < 0.2:
+            continue
+        cv2.line(frame, tuple(pts[a]), tuple(pts[b]), IDLE_OUTLINE_BGR, 3, cv2.LINE_AA)
     for a, b in POSE_CONNECTIONS:
         if vis[a] < 0.2 or vis[b] < 0.2:
             continue
         cv2.line(frame, tuple(pts[a]), tuple(pts[b]), IDLE_BONE_BGR, 1, cv2.LINE_AA)
     for idx in (LEFT_WRIST, RIGHT_WRIST, NOSE):
         if vis[idx] >= 0.2:
+            cv2.circle(frame, tuple(pts[idx]), 3, IDLE_OUTLINE_BGR, -1, cv2.LINE_AA)
             cv2.circle(frame, tuple(pts[idx]), 2, IDLE_DOT_BGR, -1, cv2.LINE_AA)
 
 
@@ -418,6 +439,10 @@ def _draw_header(
     is_airborne: bool,
     fonts: dict,
 ) -> None:
+    # Subtle translucent dark strip so the title and subtitle remain
+    # readable on bright backgrounds (sand, lit gyms) where there's no
+    # active-spiker isolation tint to darken the frame.
+    d.rectangle([(0, 0), (w, 68)], fill=(8, 12, 18, 130))
     d.text((24, 18), "SPIKE  ANALYSIS", font=fonts["title"], fill=WHITE_RGB)
     sub = f"t = {frame_idx/fps:5.2f} s  |  frame {frame_idx:>4d}  |  {n_tracked} tracked"
     if n_events == 0:
