@@ -366,6 +366,7 @@ class MultiPersonPoseDetector:
         device: str | None = None,
         max_people_per_frame: int = 14,
         existing_yolo_model: Any | None = None,
+        min_crop_short_side_px: int = 256,
     ) -> None:
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
@@ -374,6 +375,13 @@ class MultiPersonPoseDetector:
         self._mp = mp
         self._cv2: Any | None = None
         self._max_people = max_people_per_frame
+        # MediaPipe Pose IMAGE mode silently produces zero landmarks on small
+        # crops (sub-200 px). Upscale the shorter side to this many pixels
+        # before inference; coordinates are translated back via the original
+        # crop dimensions so this is a pure quality fix, not a coord shift.
+        # Validated on the gtu wide-angle game clip: 0 → 11 of 11 person
+        # boxes resolved when going from no-upscale to 256 px.
+        self._min_crop_short_side = max(96, int(min_crop_short_side_px))
         self._person = PersonBoxDetector(
             model_path=person_model_path,
             conf_threshold=person_conf,
@@ -419,16 +427,30 @@ class MultiPersonPoseDetector:
         for box in boxes:
             x1, y1, x2, y2 = _expand_box(box, w, h, pad_frac=0.12)
             crop = rgb_full[y1:y2, x1:x2]
-            if crop.size == 0:
+            crop_h, crop_w = crop.shape[:2]
+            if crop_h == 0 or crop_w == 0:
                 people.append(_person_from_box(box))
                 continue
-            mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=crop)
+            # Upscale small crops so MediaPipe's pose landmark estimator has
+            # enough resolution to work with. Normalized landmark coordinates
+            # come back in [0, 1], so we still translate them using the
+            # ORIGINAL crop dimensions — the upscale is purely a quality fix.
+            short = min(crop_h, crop_w)
+            if short < self._min_crop_short_side:
+                scale = self._min_crop_short_side / float(short)
+                resized_w = int(round(crop_w * scale))
+                resized_h = int(round(crop_h * scale))
+                infer_img = self._cv2.resize(
+                    crop, (resized_w, resized_h), interpolation=self._cv2.INTER_LINEAR
+                )
+            else:
+                infer_img = crop
+            mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=infer_img)
             result = self._landmarker.detect(mp_image)
             if not result.pose_landmarks:
                 people.append(_person_from_box(box))
                 continue
             before = len(people)
-            crop_h, crop_w = crop.shape[:2]
             for lms in result.pose_landmarks:
                 pts = np.array(
                     [[lm.x * crop_w + x1, lm.y * crop_h + y1] for lm in lms],
