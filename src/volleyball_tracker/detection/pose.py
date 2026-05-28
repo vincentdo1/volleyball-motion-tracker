@@ -364,32 +364,37 @@ def _person_from_box(box: tuple[int, int, int, int]) -> Person:
     x1, y1, x2, y2 = box
     w = max(float(x2 - x1), 1.0)
     h = max(float(y2 - y1), 1.0)
-    cx = float(x1 + x2) / 2.0
     points = np.zeros((33, 2), dtype=np.float32)
-    visibility = np.full(33, 0.45, dtype=np.float32)
+    # IMPORTANT: only the landmarks we actually place get non-zero visibility.
+    # Person.bbox() keeps every landmark with visibility > 0.3, so leaving the
+    # un-placed landmarks (eyes, mouth, fingers) at the default would drag the
+    # bounding box to the frame origin (0, 0) and break box-based spike scoring
+    # and the overlay skeleton. Start at zero and light up only placed joints.
+    visibility = np.zeros(33, dtype=np.float32)
 
-    def pt(x_frac: float, y_frac: float) -> np.ndarray:
-        return np.array([x1 + x_frac * w, y1 + y_frac * h], dtype=np.float32)
+    def pt(idx: int, x_frac: float, y_frac: float) -> None:
+        points[idx] = np.array([x1 + x_frac * w, y1 + y_frac * h], dtype=np.float32)
+        visibility[idx] = 0.45
 
-    points[NOSE] = pt(0.50, 0.08)
-    points[LEFT_EAR] = pt(0.44, 0.10)
-    points[RIGHT_EAR] = pt(0.56, 0.10)
-    points[LEFT_SHOULDER] = pt(0.36, 0.25)
-    points[RIGHT_SHOULDER] = pt(0.64, 0.25)
-    points[LEFT_ELBOW] = pt(0.28, 0.45)
-    points[RIGHT_ELBOW] = pt(0.72, 0.45)
-    points[LEFT_WRIST] = pt(0.24, 0.62)
-    points[RIGHT_WRIST] = pt(0.76, 0.62)
-    points[LEFT_HIP] = pt(0.42, 0.56)
-    points[RIGHT_HIP] = pt(0.58, 0.56)
-    points[LEFT_KNEE] = pt(0.42, 0.78)
-    points[RIGHT_KNEE] = pt(0.58, 0.78)
-    points[LEFT_ANKLE] = pt(0.42, 0.98)
-    points[RIGHT_ANKLE] = pt(0.58, 0.98)
-    points[LEFT_HEEL] = pt(0.38, 1.00)
-    points[RIGHT_HEEL] = pt(0.62, 1.00)
-    points[LEFT_FOOT] = pt(0.34, 1.00)
-    points[RIGHT_FOOT] = pt(0.66, 1.00)
+    pt(NOSE, 0.50, 0.08)
+    pt(LEFT_EAR, 0.44, 0.10)
+    pt(RIGHT_EAR, 0.56, 0.10)
+    pt(LEFT_SHOULDER, 0.36, 0.25)
+    pt(RIGHT_SHOULDER, 0.64, 0.25)
+    pt(LEFT_ELBOW, 0.28, 0.45)
+    pt(RIGHT_ELBOW, 0.72, 0.45)
+    pt(LEFT_WRIST, 0.24, 0.62)
+    pt(RIGHT_WRIST, 0.76, 0.62)
+    pt(LEFT_HIP, 0.42, 0.56)
+    pt(RIGHT_HIP, 0.58, 0.56)
+    pt(LEFT_KNEE, 0.42, 0.78)
+    pt(RIGHT_KNEE, 0.58, 0.78)
+    pt(LEFT_ANKLE, 0.42, 0.98)
+    pt(RIGHT_ANKLE, 0.58, 0.98)
+    pt(LEFT_HEEL, 0.38, 1.00)
+    pt(RIGHT_HEEL, 0.62, 1.00)
+    pt(LEFT_FOOT, 0.34, 1.00)
+    pt(RIGHT_FOOT, 0.66, 1.00)
     return Person(points=points, visibility=visibility, synthetic=True)
 
 

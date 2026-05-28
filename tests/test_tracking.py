@@ -112,6 +112,25 @@ def test_bbox_fallback_people_are_trackable() -> None:
     assert tracks[0].persons[0].synthetic
 
 
+def test_bbox_fallback_person_bbox_stays_inside_input_box() -> None:
+    """Regression: a synthetic Person must not anchor its bbox at (0, 0).
+
+    Earlier every un-placed landmark kept default visibility, so Person.bbox()
+    included the (0, 0) origin and produced a frame-spanning box. That broke
+    box-based spike scoring (every player looked adjacent to the ball) and drew
+    skeleton lines to the corner. The bbox must stay within the source box.
+    """
+    box = (640, 300, 760, 720)
+    person = _person_from_box(box)
+    x1, y1, x2, y2 = person.bbox()
+    assert box[0] <= x1 <= x2 <= box[2]
+    assert box[1] <= y1 <= y2 <= box[3]
+    # And the box must be a real region, not collapsed to the origin.
+    assert x1 > box[0] - 1 and y1 > box[1] - 1
+    assert (x2 - x1) > 0.3 * (box[2] - box[0])
+    assert (y2 - y1) > 0.5 * (box[3] - box[1])
+
+
 def test_single_actor_fragments_extend_selected_spiker_track() -> None:
     early = _person_from_box((100, 80, 180, 300))
     late = _person_from_box((120, 80, 200, 300))
