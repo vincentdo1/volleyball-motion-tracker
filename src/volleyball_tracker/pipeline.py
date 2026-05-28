@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 
 from .analysis.kinematics import SpikeMetrics, compute as compute_kinematics
-from .analysis.spiker import SpikeEvent, find_spike_events
+from .analysis.spiker import SpikeEvent, find_spike_events, find_spike_events_from_boxes
 from .analysis.tracking import PersonTrack, build_tracks
 from .config import (
     BALL_MODEL_NAME,
@@ -41,10 +41,11 @@ from .detection.ball import (
     resolution_scale,
 )
 from .detection.pose import (
-    MultiPersonPoseDetector,
+    BoxPersonDetector,
     Person,
     PoseDetector,
     PoseDetectorProtocol,
+    SpikerPoseRefiner,
 )
 from .rendering.overlay import ActiveSpiker, render_frame
 
@@ -295,7 +296,7 @@ def _detect_pass(
         if not ok:
             break
         persons = pose_det.detect(frame, int(1000 * idx / fps))
-        head_circles = [p.head_circle() for p in persons]
+        head_circles = [p.head_circle() for p in persons if not getattr(p, "synthetic", False)]
 
         if tracker is not None:
             h, w = frame.shape[:2]
@@ -354,6 +355,127 @@ def _compute_event_metrics(
         player_height_m=player_height_m,
         player_mass_kg=player_mass_kg,
     )
+
+
+def _person_box_center(person: Person) -> tuple[float, float, float, float, float, float]:
+    x1, y1, x2, y2 = person.bbox()
+    return x1, y1, x2, y2, (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
+def _bbox_area(person: Person) -> float:
+    x1, y1, x2, y2 = person.bbox()
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
+def _bbox_iou(a: Person, b: Person) -> float:
+    ax1, ay1, ax2, ay2 = a.bbox()
+    bx1, by1, bx2, by2 = b.bbox()
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    iw = max(0.0, inter_x2 - inter_x1)
+    ih = max(0.0, inter_y2 - inter_y1)
+    inter = iw * ih
+    union = _bbox_area(a) + _bbox_area(b) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _same_visible_person(a: Person, b: Person) -> bool:
+    if _bbox_iou(a, b) >= 0.30:
+        return True
+    ax1, ay1, ax2, ay2, acx, acy = _person_box_center(a)
+    bx1, by1, bx2, by2, bcx, bcy = _person_box_center(b)
+    span = max(ax2 - ax1, ay2 - ay1, bx2 - bx1, by2 - by1, 1.0)
+    return float(np.hypot(acx - bcx, acy - bcy)) <= span * 0.35
+
+
+def _refined_pose_matches_box(base: Person, refined: Person) -> bool:
+    x1, y1, x2, y2, cx, cy = _person_box_center(base)
+    rw1, rh1, rw2, rh2, rcx, rcy = _person_box_center(refined)
+    _ = (rw1, rh1, rw2, rh2)
+    max_span = max(x2 - x1, y2 - y1, 1.0)
+    return float(np.hypot(rcx - cx, rcy - cy)) <= max_span * 0.85
+
+
+def _extend_single_actor_spiker_tracks(
+    tracks: list[PersonTrack],
+    events: list[SpikeEvent],
+) -> int:
+    """Join short YOLO fragments for clips that are effectively one athlete.
+
+    Crowded game clips keep strict track identities. Single-spiker practice
+    clips often fragment because the athlete leaves/re-enters the crop or
+    changes scale quickly, and in that case the best visual result is to fill
+    the selected spiker track with the largest visible player box.
+    """
+    if not events or len(tracks) > 3:
+        return 0
+    track_by_id = {t.track_id: t for t in tracks}
+    filled = 0
+    for ev in events:
+        target = track_by_id.get(ev.track_id)
+        if target is None:
+            continue
+        for idx in range(len(target.persons)):
+            if target.persons[idx] is not None:
+                continue
+            candidates = [
+                t.persons[idx]
+                for t in tracks
+                if t.track_id != target.track_id and t.persons[idx] is not None
+            ]
+            if not candidates:
+                continue
+            target.persons[idx] = max(candidates, key=_bbox_area)
+            filled += 1
+
+        observed = [i for i, p in enumerate(target.persons) if p is not None]
+        if observed:
+            target.first_frame = min(observed)
+            target.last_frame = max(observed)
+            target.frames_seen = len(observed)
+    return filled
+
+
+def _refine_spiker_tracks(
+    input_path: str,
+    tracks: list[PersonTrack],
+    events: list[SpikeEvent],
+    total_frames: int,
+) -> int:
+    """Replace box-only detections with MediaPipe poses for selected spikers."""
+    target_ids = sorted({ev.track_id for ev in events})
+    if not target_ids:
+        return 0
+    track_by_id = {t.track_id: t for t in tracks}
+    target_tracks = [track_by_id[tid] for tid in target_ids if tid in track_by_id]
+    if not target_tracks:
+        return 0
+
+    cap, _, _, _, _ = _open_reader(input_path)
+    refiner = SpikerPoseRefiner()
+    refined_count = 0
+    idx = 0
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok or idx >= total_frames:
+                break
+            for track in target_tracks:
+                base = track.persons[idx]
+                if base is None:
+                    continue
+                refined = refiner.refine(frame, base.bbox())
+                if refined is None or not _refined_pose_matches_box(base, refined):
+                    continue
+                track.persons[idx] = refined
+                refined_count += 1
+            idx += 1
+    finally:
+        cap.release()
+        refiner.close()
+    return refined_count
 
 
 def _active_event_for_frame(
@@ -415,7 +537,7 @@ def _render_pass(
                 active_track = track_by_id.get(active_event.track_id)
                 if active_track is not None:
                     p = active_track.persons[idx]
-                    if p is not None:
+                    if p is not None and not getattr(p, "synthetic", False):
                         metrics = metrics_by_event[active_event.frame_idx]
                         fm = metrics.per_frame[idx] if 0 <= idx < len(metrics.per_frame) else metrics.per_frame[-1]
                         active = ActiveSpiker(
@@ -431,6 +553,8 @@ def _render_pass(
                 if p is None:
                     continue
                 if active is not None and t.track_id == active.track_id:
+                    continue
+                if active is not None and _same_visible_person(p, active.person):
                     continue
                 other_persons.append(p)
                 other_track_ids.append(t.track_id)
@@ -476,15 +600,17 @@ def run(cfg: PipelineConfig) -> PipelineResult:
     pose_det: PoseDetectorProtocol
     if cfg.multi_person:
         # Reuse the YOLO model already loaded for ball detection — saves
-        # loading the weights twice and lets us pick up GPU placement once.
-        pose_det = MultiPersonPoseDetector(
+        # one model load; the first pass tracks every player as a rectangle.
+        # MediaPipe is reserved for the likely spiker after box/ball
+        # kinematics identify that track.
+        pose_det = BoxPersonDetector(
             person_model_path=cfg.ball_model,
             device=cfg.device,
             max_people_per_frame=cfg.max_people_per_frame,
             existing_yolo_model=ball_det._model,  # noqa: SLF001
         )
         log.info(
-            "Pose detector: YOLO person + MediaPipe Pose (up to %d people / frame) on %s",
+            "Player detector: YOLO person boxes (up to %d people / frame) on %s",
             cfg.max_people_per_frame, pose_det.device,
         )
     else:
@@ -526,7 +652,45 @@ def run(cfg: PipelineConfig) -> PipelineResult:
     )
 
     events = find_spike_events(tracks, per_frame_ball, fps=fps)
-    log.info("  Found %d spike event(s)", len(events))
+    event_source = "pose"
+    if cfg.multi_person and not events:
+        events = find_spike_events_from_boxes(tracks, per_frame_ball, fps=fps)
+        event_source = "box"
+        if events:
+            log.info("  Box/ball spiker selector found %d candidate event(s)", len(events))
+
+    if cfg.multi_person and events:
+        filled = _extend_single_actor_spiker_tracks(tracks, events)
+        if filled:
+            log.info("  Filled selected single-spiker track across %d fragmented frame(s)", filled)
+        refined_count = _refine_spiker_tracks(cfg.input_path, tracks, events, n)
+        log.info("  Refined selected spiker pose in %d frame(s)", refined_count)
+        track_by_id_for_refine = {t.track_id: t for t in tracks}
+        selected_tracks = [
+            track_by_id_for_refine[tid]
+            for tid in sorted({ev.track_id for ev in events})
+            if tid in track_by_id_for_refine
+        ]
+        refined_events = find_spike_events(
+            selected_tracks,
+            per_frame_ball,
+            fps=fps,
+            max_radii=8.0,
+            min_post_speed_radii=0.85,
+            min_delta_v_radii=0.25,
+        )
+        if refined_events:
+            events = refined_events
+            event_source = "refined-pose"
+            log.info("  Refined pose confirmed %d spike event(s)", len(events))
+        else:
+            dropped = len(events)
+            events = []
+            if dropped:
+                event_source = "unconfirmed-box"
+                log.info("  Dropped %d box-only event(s) not confirmed by MediaPipe pose", dropped)
+
+    log.info("  Found %d spike event(s) via %s", len(events), event_source)
 
     metrics_by_event: dict[int, SpikeMetrics] = {}
     track_by_id = {t.track_id: t for t in tracks}

@@ -13,7 +13,9 @@ __all__ = [
     "PoseDetectorProtocol",
     "PoseDetector",
     "PersonBoxDetector",
+    "BoxPersonDetector",
     "MultiPersonPoseDetector",
+    "SpikerPoseRefiner",
     "POSE_CONNECTIONS",
     "NOSE",
     "LEFT_EAR",
@@ -244,6 +246,52 @@ class PersonBoxDetector:
         return boxes
 
 
+class BoxPersonDetector:
+    """YOLO person boxes exposed through the pose-detector protocol.
+
+    This is the default multi-person pass for the hybrid pipeline: every
+    visible player gets a stable body box, but MediaPipe is not run on all of
+    them. The selected spiker is refined later with ``SpikerPoseRefiner``.
+    """
+
+    def __init__(
+        self,
+        person_model_path: str = "yolov8s.pt",
+        person_conf: float = 0.25,
+        person_imgsz: int = 640,
+        device: str | None = None,
+        max_people_per_frame: int = 14,
+        existing_yolo_model: Any | None = None,
+    ) -> None:
+        self._max_people = max_people_per_frame
+        self._person = PersonBoxDetector(
+            model_path=person_model_path,
+            conf_threshold=person_conf,
+            device=device,
+            imgsz=person_imgsz,
+            existing_model=existing_yolo_model,
+        )
+
+    @property
+    def device(self) -> str:
+        return self._person.device
+
+    def detect(self, frame_bgr: np.ndarray, timestamp_ms: int) -> list[Person]:
+        _ = timestamp_ms
+        boxes = self._person.detect_boxes(frame_bgr)
+        boxes.sort(key=lambda b: -((b[2] - b[0]) * (b[3] - b[1])))
+        return [_person_from_box(box) for box in boxes[: self._max_people]]
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self) -> BoxPersonDetector:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+
 def _expand_box(
     box: tuple[int, int, int, int],
     frame_w: int,
@@ -343,6 +391,106 @@ def _person_from_box(box: tuple[int, int, int, int]) -> Person:
     points[LEFT_FOOT] = pt(0.34, 1.00)
     points[RIGHT_FOOT] = pt(0.66, 1.00)
     return Person(points=points, visibility=visibility, synthetic=True)
+
+
+class SpikerPoseRefiner:
+    """Run MediaPipe Pose on one tracked player crop.
+
+    The first pass intentionally keeps all players as YOLO boxes. Once the
+    spiker track is known, this refiner runs MediaPipe on only that crop, with
+    extra padding and upscaling so wide-angle clips still have enough pixels
+    for arm-swing landmarks.
+    """
+
+    def __init__(
+        self,
+        pose_model_path: str | Path = POSE_MODEL_PATH,
+        min_crop_short_side_px: int = 384,
+        pad_frac: float = 0.35,
+    ) -> None:
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision
+
+        self._mp = mp
+        self._cv2: Any | None = None
+        self._min_crop_short_side = max(160, int(min_crop_short_side_px))
+        self._pad_frac = max(0.0, float(pad_frac))
+        base_options = mp_python.BaseOptions(model_asset_path=str(pose_model_path))
+        options = vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_poses=1,
+            min_pose_detection_confidence=0.25,
+            min_tracking_confidence=0.5,
+        )
+        self._landmarker = vision.PoseLandmarker.create_from_options(options)
+
+    def refine(
+        self,
+        frame_bgr: np.ndarray,
+        box: tuple[float, float, float, float],
+    ) -> Person | None:
+        if self._cv2 is None:
+            import cv2
+
+            self._cv2 = cv2
+        frame_h, frame_w = frame_bgr.shape[:2]
+        int_box = (
+            max(0, int(round(box[0]))),
+            max(0, int(round(box[1]))),
+            min(frame_w, int(round(box[2]))),
+            min(frame_h, int(round(box[3]))),
+        )
+        x1, y1, x2, y2 = _expand_box(
+            int_box,
+            frame_w,
+            frame_h,
+            pad_frac=self._pad_frac,
+        )
+        crop = frame_bgr[y1:y2, x1:x2]
+        crop_h, crop_w = crop.shape[:2]
+        if crop_h == 0 or crop_w == 0:
+            return None
+
+        rgb = self._cv2.cvtColor(crop, self._cv2.COLOR_BGR2RGB)
+        short = min(crop_h, crop_w)
+        if short < self._min_crop_short_side:
+            scale = self._min_crop_short_side / float(short)
+            infer_w = int(round(crop_w * scale))
+            infer_h = int(round(crop_h * scale))
+            infer_img = self._cv2.resize(
+                rgb,
+                (infer_w, infer_h),
+                interpolation=self._cv2.INTER_LINEAR,
+            )
+        else:
+            infer_img = rgb
+
+        mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=infer_img)
+        result = self._landmarker.detect(mp_image)
+        if not result.pose_landmarks:
+            return None
+
+        lms = result.pose_landmarks[0]
+        pts = np.array(
+            [[lm.x * crop_w + x1, lm.y * crop_h + y1] for lm in lms],
+            dtype=np.float32,
+        )
+        vis = np.array([lm.visibility for lm in lms], dtype=np.float32)
+        key_vis = vis[[LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP]]
+        if float(np.nanmean(key_vis)) < 0.15:
+            return None
+        return Person(points=pts, visibility=vis, synthetic=False)
+
+    def close(self) -> None:
+        self._landmarker.close()
+
+    def __enter__(self) -> SpikerPoseRefiner:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
 
 class MultiPersonPoseDetector:

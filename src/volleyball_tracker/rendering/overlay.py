@@ -33,6 +33,7 @@ BONE_BGR = (250, 240, 235)
 BONE_OUTLINE_BGR = (20, 18, 14)        # near-black halo for readability on bright frames
 IDLE_BONE_BGR = (235, 215, 110)        # warm cyan-ish, visible on sand and gym floor
 IDLE_OUTLINE_BGR = (15, 18, 25)
+IDLE_BOX_BGR = (50, 220, 255)
 ACCENT_BGR = (255, 200, 30)
 ACCENT_RGB = (30, 200, 255)
 WHITE_RGB = (250, 252, 255)
@@ -190,15 +191,27 @@ def _draw_idle_skeleton(frame: np.ndarray, person: Person) -> None:
             cv2.circle(frame, tuple(pts[idx]), 2, IDLE_DOT_BGR, -1, cv2.LINE_AA)
 
 
+def _draw_idle_box(frame: np.ndarray, person: Person) -> None:
+    """Subtle rectangular tracking mark for non-spikers."""
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = person.bbox()
+    x1 = max(0, min(w - 1, int(round(x1))))
+    y1 = max(0, min(h - 1, int(round(y1))))
+    x2 = max(0, min(w - 1, int(round(x2))))
+    y2 = max(0, min(h - 1, int(round(y2))))
+    if x2 <= x1 or y2 <= y1:
+        return
+    cv2.rectangle(frame, (x1, y1), (x2, y2), IDLE_OUTLINE_BGR, 3, cv2.LINE_AA)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), IDLE_BOX_BGR, 1, cv2.LINE_AA)
+
+
 def _draw_track_id(
     d: ImageDraw.ImageDraw, person: Person, track_id: int, is_active: bool,
     fonts: dict, frame_w: int, frame_h: int,
 ) -> None:
     """Tiny ID chip above each tracked player so the user can see multiple
     persons are being followed separately."""
-    if person.visibility[NOSE] < 0.2:
-        return
-    nose = person.points[NOSE]
+    x1_box, y1_box, x2_box, _ = person.bbox()
     text = f"P{track_id}"
     tw = _textlen(d, text, fonts["id"])
     pad = 4
@@ -207,10 +220,10 @@ def _draw_track_id(
     if box_w >= frame_w - 4 or box_h >= frame_h - 4:
         return
     # Clamp the chip inside the frame regardless of where the nose is.
-    x_centre = float(nose[0])
+    x_centre = float((x1_box + x2_box) / 2.0)
     x1 = int(round(x_centre - box_w / 2))
     x1 = max(2, min(x1, frame_w - 2 - box_w))
-    y1 = int(float(nose[1])) - 24
+    y1 = int(float(y1_box)) - 22
     y1 = max(2, min(y1, frame_h - 2 - box_h))
     x2 = x1 + box_w
     y2 = y1 + box_h
@@ -520,7 +533,7 @@ def render_frame(
         _draw_ball_trail(out, ball_trail)
 
     for p in other_persons:
-        _draw_idle_skeleton(out, p)
+        _draw_idle_box(out, p)
 
     if active is not None:
         _draw_active_skeleton(out, active.person, active.event.spike_arm)

@@ -32,6 +32,7 @@ __all__ = [
     "ImpactInfo",
     "SpikeEvent",
     "find_impact",
+    "find_spike_events_from_boxes",
     "find_spike_events",
     "track_spiker",
 ]
@@ -363,6 +364,173 @@ def _dedupe_across_tracks(
         kept.append(ev)
     kept.sort(key=lambda e: e.frame_idx)
     return kept
+
+
+@dataclass
+class _BoxCandidate:
+    frame: int
+    track_id: int
+    arm: str
+    distance_px: float
+    distance_radii: float
+    post_speed: float
+    delta_v: float
+    post_dx: float
+    post_dy: float
+    ball_radius_px: float
+    score: float
+
+
+def _distance_to_rect(
+    x: float,
+    y: float,
+    rect: tuple[float, float, float, float],
+) -> float:
+    x1, y1, x2, y2 = rect
+    dx = max(x1 - x, 0.0, x - x2)
+    dy = max(y1 - y, 0.0, y - y2)
+    return float(np.hypot(dx, dy))
+
+
+def _box_candidate_for_track(
+    track: PersonTrack,
+    person: Person,
+    f: int,
+    ball: BallDetection,
+    pre: np.ndarray | None,
+    post: np.ndarray | None,
+    max_radii: float,
+) -> _BoxCandidate | None:
+    """Score a YOLO box as a likely ball-contact frame.
+
+    This is deliberately pose-light: it only asks whether the ball is near the
+    player's upper body and whether the ball leaves with spike-like velocity.
+    MediaPipe arm kinematics are computed later, only for the selected track.
+    """
+    x1, y1, x2, y2 = person.bbox()
+    w = x2 - x1
+    h = y2 - y1
+    if w <= 0 or h <= 0:
+        return None
+
+    # Volleyball hand contact usually happens above the hips and often just
+    # outside the tight person box, so widen the upper-body gate a little.
+    upper = (
+        x1 - 0.30 * w,
+        y1 - 0.20 * h,
+        x2 + 0.30 * w,
+        y1 + 0.58 * h,
+    )
+    dist_px = _distance_to_rect(ball.cx, ball.cy, upper)
+    distance_radii = dist_px / max(ball.radius, 1.0)
+    if distance_radii > max_radii:
+        return None
+
+    if post is None:
+        post_speed = 0.0
+        post_dx = post_dy = 0.0
+    else:
+        post_speed = float(np.linalg.norm(post))
+        post_dx, post_dy = float(post[0]), float(post[1])
+    if pre is None or post is None:
+        delta_v = post_speed
+    else:
+        delta_v = float(np.linalg.norm(post - pre))
+
+    ball_r = float(max(ball.radius, 1.0))
+    proximity = max(0.0, max_radii - distance_radii) / max(max_radii, 1.0)
+    height_zone = (y1 + 0.58 * h - ball.cy) / max(h, 1.0)
+    height_bonus = float(np.clip(height_zone, -0.25, 0.75))
+    lateral_escape = abs(post_dx) / ball_r
+    downward_bonus = max(0.0, post_dy / ball_r) * 0.15
+    score = (
+        post_speed / ball_r
+        + 0.85 * (delta_v / ball_r)
+        + 1.60 * proximity
+        + 0.45 * lateral_escape
+        + downward_bonus
+        + 0.50 * max(0.0, height_bonus)
+    )
+    arm = "right" if ball.cx >= (x1 + x2) / 2.0 else "left"
+    return _BoxCandidate(
+        frame=f,
+        track_id=track.track_id,
+        arm=arm,
+        distance_px=dist_px,
+        distance_radii=distance_radii,
+        post_speed=post_speed,
+        delta_v=delta_v,
+        post_dx=post_dx,
+        post_dy=post_dy,
+        ball_radius_px=ball_r,
+        score=float(score),
+    )
+
+
+def _cluster_box_candidates(
+    cands: list[_BoxCandidate],
+    fps: float,
+    cluster_window_s: float,
+) -> list[SpikeEvent]:
+    if not cands:
+        return []
+    window = max(2, int(round(cluster_window_s * fps))) if fps > 0 else 8
+    cands = sorted(cands, key=lambda c: c.frame)
+    out: list[_BoxCandidate] = []
+    for c in cands:
+        if not out or c.frame - out[-1].frame > window:
+            out.append(c)
+        elif c.score > out[-1].score:
+            out[-1] = c
+    return [
+        SpikeEvent(
+            track_id=c.track_id,
+            frame_idx=c.frame,
+            spike_arm=c.arm,
+            distance_px=c.distance_px,
+            score=c.score,
+        )
+        for c in out
+    ]
+
+
+def find_spike_events_from_boxes(
+    tracks: list[PersonTrack],
+    per_frame_ball: list[BallDetection | None],
+    fps: float = 30.0,
+    *,
+    max_radii: float = 8.0,
+    min_post_speed_radii: float = 1.15,
+    min_delta_v_radii: float = 0.45,
+    cluster_window_s: float = 0.45,
+) -> list[SpikeEvent]:
+    """Find likely spikers from box/ball kinematics before pose refinement.
+
+    The rectangular tracker can decide *who* is most likely involved in the
+    spike. It does not compute arm analytics; the pipeline refines the chosen
+    track with MediaPipe and then runs the regular kinematic analysis.
+    """
+    window = max(3, int(round(fps * 0.12))) if fps > 0 else 4
+    all_events: list[SpikeEvent] = []
+    for track in tracks:
+        cands: list[_BoxCandidate] = []
+        for f in range(track.first_frame, min(track.last_frame + 1, len(per_frame_ball))):
+            person = track.persons[f]
+            ball = per_frame_ball[f]
+            if person is None or ball is None:
+                continue
+            post = _ball_velocity_fit(per_frame_ball, f, f + window + 1)
+            pre = _ball_velocity_fit(per_frame_ball, max(0, f - window), f)
+            cand = _box_candidate_for_track(track, person, f, ball, pre, post, max_radii)
+            if cand is None:
+                continue
+            post_radii = cand.post_speed / cand.ball_radius_px
+            delta_radii = cand.delta_v / cand.ball_radius_px
+            if post_radii < min_post_speed_radii or delta_radii < min_delta_v_radii:
+                continue
+            cands.append(cand)
+        all_events.extend(_cluster_box_candidates(cands, fps, cluster_window_s))
+    return _dedupe_across_tracks(all_events, fps, window_s=0.25)
 
 
 def find_spike_events(

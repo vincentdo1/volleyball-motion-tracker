@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from volleyball_tracker.analysis.spiker import find_spike_events
+from volleyball_tracker.analysis.spiker import find_spike_events, find_spike_events_from_boxes
 from volleyball_tracker.analysis.tracking import build_tracks
 from volleyball_tracker.detection.ball import BallDetection
 from volleyball_tracker.detection.pose import (
@@ -87,6 +87,45 @@ def test_synthetic_fallback_people_do_not_create_spike_events() -> None:
 
     tracks = build_tracks(per_frame_persons)
     events = find_spike_events(tracks, per_frame_ball, fps=30.0)
+
+    assert events == []
+
+
+def test_box_spiker_selector_picks_upper_body_contact_player() -> None:
+    n = 36
+    impact = 12
+    per_frame_persons = []
+    per_frame_ball: list[BallDetection | None] = []
+    for f in range(n):
+        left = _person_from_box((180, 80, 300, 420))
+        right = _person_from_box((620, 80, 740, 420))
+        per_frame_persons.append([left, right])
+        if f < impact:
+            ball_x = 238.0 - (impact - f) * 1.5
+            ball_y = 150.0
+        else:
+            ball_x = 238.0 + (f - impact) * 32.0
+            ball_y = 150.0 + (f - impact) * 4.0
+        per_frame_ball.append(BallDetection(cx=ball_x, cy=ball_y, radius=12.0, conf=0.9))
+
+    tracks = build_tracks(per_frame_persons)
+    events = find_spike_events_from_boxes(tracks, per_frame_ball, fps=30.0)
+
+    assert len(events) == 1
+    assert events[0].track_id == tracks[0].track_id
+    assert abs(events[0].frame_idx - impact) <= 3
+
+
+def test_box_spiker_selector_ignores_slow_nearby_ball() -> None:
+    n = 30
+    per_frame_persons = [[_person_from_box((180, 80, 300, 420))] for _ in range(n)]
+    per_frame_ball: list[BallDetection | None] = [
+        BallDetection(cx=235.0 + f * 0.4, cy=150.0, radius=12.0, conf=0.9)
+        for f in range(n)
+    ]
+
+    tracks = build_tracks(per_frame_persons)
+    events = find_spike_events_from_boxes(tracks, per_frame_ball, fps=30.0)
 
     assert events == []
 

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
+from volleyball_tracker.analysis.spiker import SpikeEvent
+from volleyball_tracker.analysis.tracking import PersonTrack
 from volleyball_tracker.analysis.tracking import build_tracks
+from volleyball_tracker.pipeline import _extend_single_actor_spiker_tracks
 from volleyball_tracker.detection.pose import (
     LEFT_ANKLE,
     LEFT_EAR,
@@ -107,3 +110,31 @@ def test_bbox_fallback_people_are_trackable() -> None:
     assert len(tracks) == 1
     assert tracks[0].frames_seen == 12
     assert tracks[0].persons[0].synthetic
+
+
+def test_single_actor_fragments_extend_selected_spiker_track() -> None:
+    early = _person_from_box((100, 80, 180, 300))
+    late = _person_from_box((120, 80, 200, 300))
+    target = PersonTrack(
+        track_id=2,
+        persons=[None, None, late, late, late],
+        first_frame=2,
+        last_frame=4,
+        frames_seen=3,
+    )
+    other = PersonTrack(
+        track_id=1,
+        persons=[early, early, None, None, None],
+        first_frame=0,
+        last_frame=1,
+        frames_seen=2,
+    )
+    events = [SpikeEvent(track_id=2, frame_idx=3, spike_arm="right", distance_px=4.0, score=5.0)]
+
+    filled = _extend_single_actor_spiker_tracks([other, target], events)
+
+    assert filled == 2
+    assert target.first_frame == 0
+    assert target.last_frame == 4
+    assert target.frames_seen == 5
+    assert target.persons[0] is early
