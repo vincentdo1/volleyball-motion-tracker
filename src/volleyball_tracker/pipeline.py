@@ -270,6 +270,76 @@ def _choose_ball_candidate(
     return None
 
 
+def _static_candidate_bins(
+    per_frame_candidates: list[list[BallDetection]],
+    bin_size_px: float,
+    min_frames: int,
+) -> set[tuple[int, int]]:
+    """Find binned positions that a ball detection occupies in many frames.
+
+    A real volleyball never sits at one spot for long; a YOLO sports-ball
+    false positive on a fixed scene feature (a floor logo, an overhead light)
+    does. We count *frames* a bin is occupied (not raw detections) so a bin
+    that fires in a large fraction of frames is flagged as static.
+
+    This runs on the *raw candidate stream* — before trajectory selection —
+    so the stateful ball picker never locks onto a persistent false positive
+    and then refuses to jump to the real, fast-moving ball (whose detections
+    sit far outside the locked gate). reject_static_clusters() still runs
+    afterward as a second line of defence on the chosen ball.
+    """
+    from collections import defaultdict
+
+    counts: dict[tuple[int, int], int] = defaultdict(int)
+    for cands in per_frame_candidates:
+        seen: set[tuple[int, int]] = set()
+        for d in cands:
+            seen.add((int(d.cx // bin_size_px), int(d.cy // bin_size_px)))
+        for key in seen:
+            counts[key] += 1
+    return {key for key, c in counts.items() if c >= min_frames}
+
+
+def _select_ball_series(
+    per_frame_candidates: list[list[BallDetection]],
+    res_scale: float,
+) -> list[BallDetection | None]:
+    """Trajectory-select one ball per frame from the cleaned candidate stream."""
+    n = len(per_frame_candidates)
+    # The ball can't occupy a single 6px bin for more than a fraction of the
+    # clip; require a static bin to appear in >=30% of frames (floor 30) so a
+    # briefly held pre-serve ball is never mistaken for a fixed false positive.
+    min_static_frames = max(30, int(0.30 * n)) if n else 30
+    static_bins = _static_candidate_bins(
+        per_frame_candidates, bin_size_px=6.0 * res_scale, min_frames=min_static_frames
+    )
+    bin_size = 6.0 * res_scale
+
+    per_frame_ball: list[BallDetection | None] = []
+    last_ball: BallDetection | None = None
+    prev_ball: BallDetection | None = None
+    last_ball_idx = -1
+    prev_ball_idx = -1
+    for idx, cands in enumerate(per_frame_candidates):
+        if static_bins:
+            cands = [
+                d for d in cands
+                if (int(d.cx // bin_size), int(d.cy // bin_size)) not in static_bins
+            ]
+        ball = _choose_ball_candidate(
+            cands, idx, last_ball, last_ball_idx, prev_ball, prev_ball_idx, res_scale
+        )
+        if ball is not None:
+            prev_ball = last_ball
+            prev_ball_idx = last_ball_idx
+            last_ball = ball
+            last_ball_idx = idx
+        per_frame_ball.append(ball)
+    if static_bins:
+        log.info("  Excluded %d static ball-candidate location(s) before tracking", len(static_bins))
+    return per_frame_ball
+
+
 def _detect_pass(
     cap: cv2.VideoCapture,
     fps: float,
@@ -279,14 +349,16 @@ def _detect_pass(
     roi_tracking: bool,
     res_scale: float,
 ) -> tuple[list[list[Person]], list[BallDetection | None], int]:
-    """Pass 1: stream frames, accumulate per-frame detections only."""
+    """Pass 1: stream frames, accumulate per-frame detections only.
+
+    Ball *candidates* are gathered every frame and the final per-frame ball is
+    selected afterward (see ``_select_ball_series``) so static false positives
+    can be removed from the candidate pool before the stateful trajectory
+    picker runs. The ROI tracker (opt-in) still steers detection inline.
+    """
     per_frame_persons: list[list[Person]] = []
-    per_frame_ball: list[BallDetection | None] = []
+    per_frame_candidates: list[list[BallDetection]] = []
     tracker = BallTrackingState(stuck_px=3.0 * res_scale) if roi_tracking else None
-    last_ball: BallDetection | None = None
-    prev_ball: BallDetection | None = None
-    last_ball_idx = -1
-    prev_ball_idx = -1
 
     log.info("Pass 1/2: detecting players and ball ...")
     t0 = time.time()
@@ -308,30 +380,20 @@ def _detect_pass(
             candidates = ball_det.detect_all(frame)
 
         candidates = _filter_near_faces(candidates, head_circles)
-        ball = _choose_ball_candidate(
-            candidates,
-            idx,
-            last_ball,
-            last_ball_idx,
-            prev_ball,
-            prev_ball_idx,
-            res_scale,
-        )
         if tracker is not None:
-            tracker.update(ball)
-        if ball is not None:
-            prev_ball = last_ball
-            prev_ball_idx = last_ball_idx
-            last_ball = ball
-            last_ball_idx = idx
+            # Drive the ROI lock with a simple inline pick; the authoritative
+            # per-frame ball is chosen later from the cleaned candidate stream.
+            tracker.update(max(candidates, key=lambda d: d.conf) if candidates else None)
 
         per_frame_persons.append(persons)
-        per_frame_ball.append(ball)
+        per_frame_candidates.append(candidates)
         idx += 1
         if idx % 30 == 0 or idx == total_frames:
             elapsed = max(time.time() - t0, 1e-6)
             log.info("  %d/%d  (%.1f fps)", idx, total_frames, idx / elapsed)
     n = idx
+
+    per_frame_ball = _select_ball_series(per_frame_candidates, res_scale)
     log.info("  Ball detected in %d/%d frames", sum(b is not None for b in per_frame_ball), n)
     log.info("  Pose found in %d/%d frames", sum(len(p) > 0 for p in per_frame_persons), n)
     return per_frame_persons, per_frame_ball, n
