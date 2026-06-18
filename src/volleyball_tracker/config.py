@@ -30,9 +30,9 @@ BALL_MASS_KG = 0.27
 BALL_CONTACT_TIME_S = 0.012
 PUSHOFF_TIME_S = 0.25
 
-SPORTS_BALL_CLASS_ID = 32
+PERSON_CLASS_ID = 0  # COCO 'person'
+SPORTS_BALL_CLASS_ID = 32  # COCO 'sports ball'
 MAX_BALL_GAP_FRAMES = 30
-# 8 (was 6) to catch the actual spiker in crowded scenes like a team practice
-# where 6 of the 7+ visible players can saturate the detector and drop the one
-# we actually care about. MediaPipe's per-pose cost is small, so this is cheap.
+# Crowded practice scenes have 7+ visible players; the spiker can get dropped
+# if the detector saturates at a lower cap. Extra poses are cheap.
 DEFAULT_NUM_POSES = 8

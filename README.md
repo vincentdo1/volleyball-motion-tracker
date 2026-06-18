@@ -1,12 +1,20 @@
 # volleyball-motion-tracker
 
-Multi-person volleyball spike analysis with pose tracking, ball tracking,
+Multi-person volleyball attack analysis with pose tracking, ball tracking,
 kinematic estimates, and an annotated HUD overlay.
 
-Every visible player is tracked across the clip. When a player spikes, the
-overlay highlights them and reports the arm-swing, jump, and ball-impact
-kinematics for that spike. A clip can contain zero spikes (the tracker still
-renders everyone), one spike, or many — each spike is analyzed independently.
+Every visible player is tracked across the clip. When a player attacks, the
+overlay highlights them, labels the attack (spike / tip / roll), and reports
+the arm-swing, jump, and ball-impact kinematics. Sets and overhand passes are
+rejected — an attack needs a downward arm swing or a forward-driven ball, not
+a ball lofted straight back up. A clip can contain zero attacks (the tracker
+still renders everyone), one, or many — each is analyzed independently.
+
+![Spike analysis overlay](docs/sample_spike_analysis.png)
+
+*`volleyball_spike_attempt_03.mp4` at the moment of contact: the attacker is
+spotlighted, the swing is labeled a spike, and arm-swing, hand-speed, and
+ball-impact metrics are drawn around them.*
 
 ## Stack
 
@@ -14,16 +22,18 @@ MediaPipe (pose), YOLOv8 (person + ball), OpenCV, Pillow, NumPy
 
 ## How it works
 
-1. **Detect** — each frame, YOLO finds every player's bounding box and the
-   ball. Players are tracked into stable identities across frames.
-2. **Find spikes** — a box/ball selector flags frames where a tracked player's
-   upper body meets the ball and the ball leaves with spike-like velocity.
-   Thresholds are in ball-radii per frame, so they hold across 720p/1080p/4K.
+1. **Detect** — each frame, a single YOLO pass finds every player's bounding
+   box and the ball. Players are tracked into stable identities across frames.
+2. **Find attacks** — a box/ball selector flags frames where a tracked
+   player's upper body meets the ball and the ball leaves with attack-like
+   velocity. Thresholds are in ball-radii per frame, so they hold across
+   720p/1080p/4K. Surviving events are classified spike, tip, or roll from
+   ball-exit speed and wrist motion at contact.
 3. **Refine + measure** — MediaPipe Pose is run at high fidelity on just the
-   spiking players' frames, then arm-swing angle, hand speed, jump height,
-   jump force, and spike force on the ball are computed per spike.
-4. **Render** — every player is drawn; the active spiker is highlighted with
-   their analytics HUD. Frames with no spike still show the full tracking.
+   attacking players' frames, then arm-swing angle, hand speed, jump height,
+   jump force, and spike force on the ball are computed per event.
+4. **Render** — every player is drawn; the active attacker is highlighted with
+   their analytics HUD. Frames with no attack still show the full tracking.
 
 ## Run
 

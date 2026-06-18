@@ -23,7 +23,12 @@ import cv2
 import numpy as np
 
 from .analysis.kinematics import SpikeMetrics, compute as compute_kinematics
-from .analysis.spiker import SpikeEvent, find_spike_events, find_spike_events_from_boxes
+from .analysis.spiker import (
+    SpikeEvent,
+    classify_attack,
+    find_spike_events,
+    find_spike_events_from_boxes,
+)
 from .analysis.tracking import PersonTrack, build_tracks
 from .config import (
     BALL_MODEL_NAME,
@@ -359,6 +364,9 @@ def _detect_pass(
     per_frame_persons: list[list[Person]] = []
     per_frame_candidates: list[list[BallDetection]] = []
     tracker = BallTrackingState(stuck_px=3.0 * res_scale) if roi_tracking else None
+    # When players come from YOLO boxes (the default) and we're not ROI-locking
+    # the ball, both classes can be read from one shared forward pass.
+    combined = tracker is None and isinstance(pose_det, BoxPersonDetector)
 
     log.info("Pass 1/2: detecting players and ball ...")
     t0 = time.time()
@@ -367,18 +375,22 @@ def _detect_pass(
         ok, frame = cap.read()
         if not ok:
             break
-        persons = pose_det.detect(frame, int(1000 * idx / fps))
-        head_circles = [p.head_circle() for p in persons if not getattr(p, "synthetic", False)]
 
-        if tracker is not None:
-            h, w = frame.shape[:2]
-            roi = tracker.predict_roi(w, h, ball_det._roi_size)
-            candidates = ball_det.detect_all(frame, roi=roi)
-            if not candidates and roi is not None:
-                candidates = ball_det.detect_all(frame)
+        if combined:
+            boxes, candidates = ball_det.detect_people_and_balls(frame)
+            persons = pose_det.build_people(boxes)
         else:
-            candidates = ball_det.detect_all(frame)
+            persons = pose_det.detect(frame, int(1000 * idx / fps))
+            if tracker is not None:
+                h, w = frame.shape[:2]
+                roi = tracker.predict_roi(w, h, ball_det._roi_size)
+                candidates = ball_det.detect_all(frame, roi=roi)
+                if not candidates and roi is not None:
+                    candidates = ball_det.detect_all(frame)
+            else:
+                candidates = ball_det.detect_all(frame)
 
+        head_circles = [p.head_circle() for p in persons if not getattr(p, "synthetic", False)]
         candidates = _filter_near_faces(candidates, head_circles)
         if tracker is not None:
             # Drive the ROI lock with a simple inline pick; the authoritative
@@ -765,13 +777,19 @@ def run(cfg: PipelineConfig) -> PipelineResult:
             player_height_m=cfg.player_height_m,
             player_mass_kg=cfg.player_mass_kg,
         )
+        # Refine the attack label with the smoothed physical metrics.
+        ev.action = classify_attack(
+            metrics.ball_speed_before_mps,
+            metrics.ball_speed_after_mps,
+            metrics.peak_hand_speed_mps,
+        )
         metrics_by_event[ev.frame_idx] = metrics
         log.info(
-            "  Spike P%d @ frame %d t=%.2fs arm=%s "
+            "  %s P%d @ frame %d t=%.2fs arm=%s "
             "arm=%.1fdeg elbow=%.1fdeg hand=%.1fm/s spiker=%.1fm/s "
             "flight=%.2fs jump=%.2fm Fjump=%.0fN Fspike=%.0fN "
             "Vball(before/after)=%.1f/%.1f m/s",
-            ev.track_id, ev.frame_idx, ev.frame_idx / fps, ev.spike_arm,
+            ev.action.capitalize(), ev.track_id, ev.frame_idx, ev.frame_idx / fps, ev.spike_arm,
             metrics.arm_swing_angle_deg, metrics.elbow_extension_deg,
             metrics.peak_hand_speed_mps, metrics.peak_spiker_speed_mps,
             metrics.flight_time_s, metrics.jump_height_m,

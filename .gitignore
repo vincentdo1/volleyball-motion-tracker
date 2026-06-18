@@ -24,7 +24,6 @@ Ultralytics/
 
 .env
 .envrc
-.claude/settings.local.json
 
 __pycache__/
 *.py[codz]

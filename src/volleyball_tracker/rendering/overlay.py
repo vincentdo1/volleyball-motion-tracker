@@ -28,7 +28,6 @@ from ..detection.pose import (
 __all__ = ["render_frame", "ActiveSpiker"]
 
 
-BG_TINT_BGR = (38, 22, 12)
 BONE_BGR = (250, 240, 235)
 BONE_OUTLINE_BGR = (20, 18, 14)        # near-black halo for readability on bright frames
 IDLE_BONE_BGR = (235, 215, 110)        # warm cyan-ish, visible on sand and gym floor
@@ -36,6 +35,12 @@ IDLE_OUTLINE_BGR = (15, 18, 25)
 IDLE_BOX_BGR = (50, 220, 255)
 ACCENT_BGR = (255, 200, 30)
 ACCENT_RGB = (30, 200, 255)
+# Attack-type accent (RGB): spike = signature cyan, tip = mint, roll = amber.
+ACTION_RGB = {
+    "spike": (30, 200, 255),
+    "tip": (120, 224, 170),
+    "roll": (255, 196, 96),
+}
 WHITE_RGB = (250, 252, 255)
 DIM_RGB = (160, 175, 195)
 LABEL_RGB = (210, 222, 238)
@@ -57,7 +62,19 @@ def _load_font(paths: list[str], size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
+_FONT_CACHE: dict[int, dict[str, ImageFont.FreeTypeFont]] = {}
+
+
 def _font_set(frame_w: int) -> dict[str, ImageFont.FreeTypeFont]:
+    cached = _FONT_CACHE.get(frame_w)
+    if cached is not None:
+        return cached
+    fonts = _build_font_set(frame_w)
+    _FONT_CACHE[frame_w] = fonts
+    return fonts
+
+
+def _build_font_set(frame_w: int) -> dict[str, ImageFont.FreeTypeFont]:
     scale = frame_w / 1280.0
     return {
         "value":    _load_font(_BOLD_PATHS, max(24, int(34 * scale))),
@@ -117,16 +134,16 @@ def _build_spiker_mask(person: Person, shape: tuple[int, ...]) -> np.ndarray:
 
 
 def _apply_isolation(frame_bgr: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Blend the active spiker region (full colour) over a desaturated +
-    tinted background.
+    """Spotlight the active spiker: keep them at full colour, gently dim the
+    rest of the frame.
 
-    Stays in uint8 throughout (no float32 round-trips) and uses cv2
-    primitives, which is ~4x faster than the equivalent numpy float pipeline.
+    The background keeps most of its colour (only lightly desaturated) and
+    drops to ~60% brightness, so the spiker reads clearly without the harsh
+    near-black look. uint8 + cv2 primitives throughout for speed.
     """
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    gray3 = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-    tint = np.full_like(frame_bgr, BG_TINT_BGR)
-    bg = cv2.addWeighted(gray3, 0.43, tint, 0.35, 0)
+    gray3 = cv2.cvtColor(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
+    # 0.48*colour + 0.12*gray -> brightness 0.60, ~80% colour retained.
+    bg = cv2.addWeighted(frame_bgr, 0.48, gray3, 0.12, 0)
 
     alpha = (mask * 255).astype(np.uint8)
     alpha_3 = cv2.merge((alpha, alpha, alpha))
@@ -452,9 +469,8 @@ def _draw_header(
     is_airborne: bool,
     fonts: dict,
 ) -> None:
-    # Subtle translucent dark strip so the title and subtitle remain
-    # readable on bright backgrounds (sand, lit gyms) where there's no
-    # active-spiker isolation tint to darken the frame.
+    # Translucent strip to keep the title/subtitle readable on bright
+    # backgrounds (sand, lit gyms).
     d.rectangle([(0, 0), (w, 68)], fill=(8, 12, 18, 130))
     d.text((24, 18), "SPIKE  ANALYSIS", font=fonts["title"], fill=WHITE_RGB)
     sub = f"t = {frame_idx/fps:5.2f} s  |  frame {frame_idx:>4d}  |  {n_tracked} tracked"
@@ -480,7 +496,9 @@ def _draw_header(
         chip("AIRBORNE", LABEL_RGB)
     if active is not None and n_events > 0:
         ordinal = event_ordinal if event_ordinal is not None else 1
-        chip(f"SPIKE {ordinal}/{n_events}  P{active.track_id}", ACCENT_RGB)
+        action = active.event.action or "spike"
+        color = ACTION_RGB.get(action, ACCENT_RGB)
+        chip(f"{action.upper()} {ordinal}/{n_events}  P{active.track_id}", color)
 
 
 def render_frame(

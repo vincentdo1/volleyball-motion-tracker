@@ -130,6 +130,75 @@ def test_box_spiker_selector_ignores_slow_nearby_ball() -> None:
     assert events == []
 
 
+def test_overhand_set_is_not_an_attack() -> None:
+    """A set: ball arrives slowly, leaves nearly straight up off static hands.
+    Must not produce an event even though the contact is fast and overhead."""
+    fps = 30.0
+    n = 40
+    contact = 15
+    per_frame_persons = [
+        [_person_with_arm(200.0, 300.0, (10.0, -45.0), "right")] for _ in range(n)
+    ]
+    per_frame_ball: list[BallDetection | None] = []
+    for f in range(n):
+        if f < contact:
+            ball_x = 222.0
+            ball_y = 205.0 + (contact - f) * 2.0
+        else:
+            ball_x = 222.0 + (f - contact) * 2.0
+            ball_y = 205.0 - (f - contact) * 30.0
+        per_frame_ball.append(BallDetection(cx=ball_x, cy=ball_y, radius=12.0, conf=0.9))
+
+    tracks = build_tracks(per_frame_persons)
+    events = find_spike_events(tracks, per_frame_ball, fps=fps)
+    assert events == []
+
+
+def test_spike_event_is_labeled_spike() -> None:
+    fps = 30.0
+    n = 40
+    impact_frame = 15
+    per_frame_persons = []
+    per_frame_ball: list[BallDetection | None] = []
+    for f in range(n):
+        per_frame_persons.append([_person_with_arm(200.0, 300.0, (40.0, -30.0), "right")])
+        if f < impact_frame:
+            ball_x = 240.0 - (impact_frame - f) * 1.0
+            ball_y = 250.0 - (impact_frame - f) * 0.5
+        else:
+            ball_x = 240.0 + (f - impact_frame) * 50.0
+            ball_y = 280.0 + (f - impact_frame) * 6.0
+        per_frame_ball.append(BallDetection(cx=ball_x, cy=ball_y, radius=12.0, conf=0.9))
+
+    tracks = build_tracks(per_frame_persons)
+    events = find_spike_events(tracks, per_frame_ball, fps=fps)
+    assert len(events) == 1
+    assert events[0].action == "spike"
+
+
+def test_soft_downward_touch_is_labeled_tip() -> None:
+    """Ball barely redirected, leaving slowly and downward: a tip, not a spike."""
+    fps = 30.0
+    n = 40
+    impact_frame = 15
+    per_frame_persons = []
+    per_frame_ball: list[BallDetection | None] = []
+    for f in range(n):
+        per_frame_persons.append([_person_with_arm(200.0, 300.0, (40.0, -30.0), "right")])
+        if f < impact_frame:
+            ball_x = 244.0
+            ball_y = 222.0 - (impact_frame - f) * 12.0
+        else:
+            ball_x = 244.0 + (f - impact_frame) * 6.0
+            ball_y = 222.0 + (f - impact_frame) * 13.0
+        per_frame_ball.append(BallDetection(cx=ball_x, cy=ball_y, radius=12.0, conf=0.9))
+
+    tracks = build_tracks(per_frame_persons)
+    events = find_spike_events(tracks, per_frame_ball, fps=fps)
+    assert len(events) == 1
+    assert events[0].action == "tip"
+
+
 def test_single_spike_produces_one_event() -> None:
     """A right-handed player whose wrist meets the ball at frame 15, after
     which the ball flies horizontally away at high speed (~10 m/s scale)."""

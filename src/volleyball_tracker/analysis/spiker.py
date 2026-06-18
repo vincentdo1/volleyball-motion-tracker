@@ -1,14 +1,14 @@
-"""Spike-event detection.
+"""Attack-event detection and classification.
 
-This module finds *spike events* — moments when a tracked player's wrist
-makes contact with the ball and sends it away with spike-like kinematics
-(extended arm, wrist at or above shoulder, ball deflected with significant
-non-upward velocity). A clip may contain zero events (e.g. a pass-only
-sequence), one event (a typical practice clip), or many events (a rally).
+Finds the moments where a tracked player attacks the ball — wrist contact
+followed by a spike-like exit — and labels each event as a spike, tip, or
+roll. Sets and overhand passes are filtered out: their ball leaves steeply
+upward without the downward arm swing that defines an attack. A clip may
+contain zero, one, or many events.
 
 The legacy single-impact API (``find_impact`` + ``track_spiker``) is kept
-for backwards compatibility but the new pipeline uses ``find_spike_events``
-operating on already-built ``PersonTrack`` objects.
+for older callers; the pipeline uses ``find_spike_events`` on built
+``PersonTrack`` objects.
 """
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from .tracking import PersonTrack
 __all__ = [
     "ImpactInfo",
     "SpikeEvent",
+    "classify_attack",
     "find_impact",
     "find_spike_events_from_boxes",
     "find_spike_events",
@@ -50,11 +51,13 @@ class ImpactInfo:
 
 @dataclass
 class SpikeEvent:
-    """One spike performed by one tracked player.
+    """One attack performed by one tracked player.
 
-    ``track_id`` identifies which ``PersonTrack`` did the spiking. ``score``
-    is the internal candidate score (higher = more spike-like) — kept so the
+    ``track_id`` identifies which ``PersonTrack`` made the attack. ``score``
+    is the internal candidate score (higher = more spike-like), kept so the
     pipeline can deduplicate near-simultaneous candidates across tracks.
+    ``action`` labels the attack type: "spike" (hard-driven), "tip" (soft
+    redirect), or "roll" (controlled off-speed shot).
     """
 
     track_id: int
@@ -62,6 +65,7 @@ class SpikeEvent:
     spike_arm: str
     distance_px: float
     score: float
+    action: str = "spike"
 
     def as_impact_info(self, person_idx_in_frame: int = 0) -> ImpactInfo:
         """Adapt to the legacy ``ImpactInfo`` shape so existing kinematics code
@@ -122,6 +126,8 @@ class _Candidate:
     post_dx: float
     delta_v: float               # |post - pre|, px/frame
     ball_radius_px: float        # ball radius at the impact frame, for resolution-independent thresholds
+    swing_speed_h: float = float("nan")  # wrist speed near contact, body-heights/frame
+    swing_dy_h: float = float("nan")     # vertical wrist velocity, +ve = downward
 
 
 def _candidate_for_person(
@@ -132,6 +138,7 @@ def _candidate_for_person(
     pre: np.ndarray | None,
     post: np.ndarray | None,
     max_radii: float,
+    swing_by_arm: dict[str, tuple[float, float]] | None = None,
 ) -> list[_Candidate]:
     """Score both arms of a single person against the ball at frame ``f``."""
     out: list[_Candidate] = []
@@ -154,7 +161,10 @@ def _candidate_for_person(
         d_radii = d_px / max(ball.radius, 1.0)
         if d_radii > max_radii:
             continue
-        wrist_above = (shoulder[1] - wrist[1]) / person_h
+        # Clamp to a physically sane range: a collapsed refined pose can give a
+        # near-zero pixel height, which would otherwise blow this up and let a
+        # garbage frame dominate scoring.
+        wrist_above = float(np.clip((shoulder[1] - wrist[1]) / person_h, -2.0, 2.0))
         elbow_ang = _elbow_angle_deg(shoulder, elbow, wrist)
         if post is None:
             post_speed = 0.0
@@ -166,6 +176,7 @@ def _candidate_for_person(
             delta_v = post_speed
         else:
             delta_v = float(np.linalg.norm(post - pre))
+        swing_speed, swing_dy = (swing_by_arm or {}).get(arm, (float("nan"), float("nan")))
         out.append(_Candidate(
             frame=f, person_idx=person_idx, arm=arm,
             distance_px=d_px, distance_radii=d_radii,
@@ -174,8 +185,79 @@ def _candidate_for_person(
             post_speed=post_speed, post_dy=post_dy, post_dx=post_dx,
             delta_v=delta_v,
             ball_radius_px=float(max(ball.radius, 1.0)),
+            swing_speed_h=swing_speed,
+            swing_dy_h=swing_dy,
         ))
     return out
+
+
+def _track_wrist_swing(track: PersonTrack, f: int, wrist_idx: int) -> tuple[float, float]:
+    """Wrist velocity around frame ``f``, in body-heights per frame.
+
+    Returns (speed, dy) with +dy = downward. The window leans one frame past
+    contact so the follow-through is included — that's where a spike's
+    downward snap shows up. NaNs when the wrist isn't visible enough.
+    """
+    samples: list[tuple[int, np.ndarray]] = []
+    heights: list[float] = []
+    for k in range(max(0, f - 1), min(len(track.persons), f + 4)):
+        p = track.persons[k]
+        if p is None or getattr(p, "synthetic", False) or p.visibility[wrist_idx] < 0.3:
+            continue
+        samples.append((k, p.points[wrist_idx].astype(np.float64)))
+        h = p.pixel_height()
+        if np.isfinite(h) and h > 0:
+            heights.append(float(h))
+    if len(samples) < 2 or not heights:
+        return float("nan"), float("nan")
+    (k0, p0), (k1, p1) = samples[0], samples[-1]
+    if k1 <= k0:
+        return float("nan"), float("nan")
+    v = (p1 - p0) / float(k1 - k0)
+    h = float(np.median(heights))
+    return float(np.linalg.norm(v)) / h, float(v[1]) / h
+
+
+def _classify_action(
+    post_speed_radii: float,
+    post_dx: float,
+    post_dy: float,
+    swing_speed_h: float,
+) -> str:
+    """Detection-time label from resolution-independent kinematics.
+
+    Used by direct callers; the pipeline refines this with physical metrics
+    via ``classify_attack`` once per-event kinematics are computed.
+    """
+    if post_speed_radii >= 2.0:
+        return "spike"
+    soft = post_speed_radii < 1.35
+    downward = post_dy > 0.10 * abs(post_dx)
+    if soft and downward:
+        return "tip"
+    if soft and np.isfinite(swing_speed_h) and swing_speed_h < 0.07:
+        return "tip"
+    return "roll"
+
+
+def classify_attack(
+    ball_before_mps: float,
+    ball_after_mps: float,
+    hand_speed_mps: float,
+) -> str:
+    """Label an attack spike / tip / roll from physical kinematics.
+
+    - spike: a fast hand driving the ball out hard.
+    - tip: a soft touch that just redirects a slow ball.
+    - roll: an off-speed shot in between.
+    """
+    if ball_after_mps >= 10.0:
+        return "spike"
+    if hand_speed_mps >= 11.0 and ball_after_mps >= 6.0:
+        return "spike"
+    if ball_after_mps < 5.0 and hand_speed_mps < 9.0:
+        return "tip"
+    return "roll"
 
 
 def _gather_candidates(
@@ -219,12 +301,26 @@ _TIERS = (
     #   max_upward_ratio: post-impact dy >= -ratio * |dx| - 1.0 (px/frame)
     (110.0, -0.10, 0.50),   # strict: extended arm, wrist near/above shoulder, ball ~horizontal-or-down
     (95.0,  -0.30, 1.20),   # loose:  bent OK, wrist mid-torso OK, mostly upward OK
-    (0.0,   -10.0, 1e9),    # last resort: no filters
+    (0.0,   -10.0, 1e9),    # last resort: no filters (legacy find_impact only)
+)
+
+# Event detection keeps a permissive last-resort tier (refined poses make the
+# elbow/wrist landmarks noisy) but, unlike the legacy table, never accepts a
+# ball that leaves steeply upward — that upward cap is what rejects sets and
+# overhand passes, the main false-positive source.
+_EVENT_TIERS = (
+    (110.0, -0.10, 0.50),
+    (95.0,  -0.30, 1.20),
+    (0.0,  -10.0,  1.50),
 )
 
 
-def _filter_tier(cands: list[_Candidate], tier_idx: int) -> list[_Candidate]:
-    min_elbow, min_wrist_above, max_up_ratio = _TIERS[tier_idx]
+def _filter_tier(
+    cands: list[_Candidate],
+    tier_idx: int,
+    tiers: tuple[tuple[float, float, float], ...] = _TIERS,
+) -> list[_Candidate]:
+    min_elbow, min_wrist_above, max_up_ratio = tiers[tier_idx]
     out: list[_Candidate] = []
     for c in cands:
         if np.isfinite(c.elbow_angle_deg) and c.elbow_angle_deg < min_elbow:
@@ -282,8 +378,12 @@ def _gather_candidates_for_track(
             continue
         post = _ball_velocity_fit(per_frame_ball, f, f + window + 1)
         pre = _ball_velocity_fit(per_frame_ball, max(0, f - window), f)
+        swing_by_arm = {
+            "left": _track_wrist_swing(track, f, LEFT_WRIST),
+            "right": _track_wrist_swing(track, f, RIGHT_WRIST),
+        }
         # person_idx here is meaningless for tracks; _score doesn't use it.
-        out.extend(_candidate_for_person(person, 0, f, ball, pre, post, max_radii))
+        out.extend(_candidate_for_person(person, 0, f, ball, pre, post, max_radii, swing_by_arm))
     return out
 
 
@@ -309,8 +409,8 @@ def _select_events_from_candidates(
         return []
 
     selected: list[_Candidate] = []
-    for tier in range(len(_TIERS)):
-        filtered = _filter_tier(cands, tier)
+    for tier in range(len(_EVENT_TIERS)):
+        filtered = _filter_tier(cands, tier, tiers=_EVENT_TIERS)
         filtered = [
             c for c in filtered
             if c.post_speed / c.ball_radius_px >= min_post_speed_radii
@@ -325,26 +425,25 @@ def _select_events_from_candidates(
     cluster_frames = max(2, int(round(cluster_window_s * fps))) if fps > 0 else 6
 
     selected.sort(key=lambda c: c.frame)
-    events: list[SpikeEvent] = []
+    best: list[_Candidate] = []
     for c in selected:
-        s = _score(c)
-        if not events or c.frame - events[-1].frame_idx > cluster_frames:
-            events.append(SpikeEvent(
-                track_id=track_id,
-                frame_idx=c.frame,
-                spike_arm=c.arm,
-                distance_px=c.distance_px,
-                score=s,
-            ))
-        elif s > events[-1].score:
-            events[-1] = SpikeEvent(
-                track_id=track_id,
-                frame_idx=c.frame,
-                spike_arm=c.arm,
-                distance_px=c.distance_px,
-                score=s,
-            )
-    return events
+        if not best or c.frame - best[-1].frame > cluster_frames:
+            best.append(c)
+        elif _score(c) > _score(best[-1]):
+            best[-1] = c
+    return [
+        SpikeEvent(
+            track_id=track_id,
+            frame_idx=c.frame,
+            spike_arm=c.arm,
+            distance_px=c.distance_px,
+            score=_score(c),
+            action=_classify_action(
+                c.post_speed / c.ball_radius_px, c.post_dx, c.post_dy, c.swing_speed_h,
+            ),
+        )
+        for c in best
+    ]
 
 
 def _dedupe_across_tracks(
@@ -489,6 +588,9 @@ def _cluster_box_candidates(
             spike_arm=c.arm,
             distance_px=c.distance_px,
             score=c.score,
+            action=_classify_action(
+                c.post_speed / c.ball_radius_px, c.post_dx, c.post_dy, float("nan"),
+            ),
         )
         for c in out
     ]
@@ -528,6 +630,10 @@ def find_spike_events_from_boxes(
             delta_radii = cand.delta_v / cand.ball_radius_px
             if post_radii < min_post_speed_radii or delta_radii < min_delta_v_radii:
                 continue
+            # No wrist data at the box stage, so gate on the ball alone: an
+            # exit rising much faster than it travels is a set or pass.
+            if -cand.post_dy > 0.8 * abs(cand.post_dx) + 1.0:
+                continue
             cands.append(cand)
         all_events.extend(_cluster_box_candidates(cands, fps, cluster_window_s))
     return _dedupe_across_tracks(all_events, fps, window_s=0.25)
@@ -543,21 +649,16 @@ def find_spike_events(
     min_delta_v_radii: float = 0.4,
     cluster_window_s: float = 0.35,
 ) -> list[SpikeEvent]:
-    """Detect spike events across every tracked player.
+    """Detect attack events (spike/tip/roll) across every tracked player.
 
-    Per-track candidates are first gathered (any wrist-ball contact within
-    ``max_radii`` ball radii). They're then put through the same tiered
-    spike-shape filter as the legacy ``find_impact`` does, plus minimum
-    post-impact ball speed and velocity-change thresholds (both in
-    ball-radii per frame, resolution-independent) so we don't emit a "spike"
-    for a casual touch. Finally events within ~0.2s of each other across
-    tracks are deduplicated.
-
-    Defaults are calibrated for 30 fps clips: a real volleyball at impact
-    moves at least ~1 ball-radius per frame (≈3 m/s of average measured
-    speed in the analysis window), with a velocity change of at least
-    ~0.4 radii/frame on contact. Casual passes (where the ball was already
-    moving) and sets (low velocity change) get rejected.
+    Per-track wrist-ball contacts within ``max_radii`` ball radii are scored,
+    then filtered by the tiered arm-shape gate (``_EVENT_TIERS`` — extended
+    arm, wrist near/above shoulder, ball not leaving steeply upward, which
+    rejects sets and overhand passes) plus minimum post-impact ball speed and
+    velocity change. Thresholds are in ball-radii per frame so they hold
+    across resolutions: ~1 radius/frame at 30 fps is roughly 3 m/s. Events
+    within ~0.2 s across tracks are deduplicated, and each surviving event is
+    labeled spike, tip, or roll.
     """
     all_events: list[SpikeEvent] = []
     for track in tracks:

@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from ..config import DEFAULT_NUM_POSES, POSE_MODEL_PATH
+from ..config import DEFAULT_NUM_POSES, PERSON_CLASS_ID, POSE_MODEL_PATH
 
 __all__ = [
     "Person",
@@ -170,9 +170,6 @@ class PoseDetector:
         self.close()
 
 
-PERSON_CLASS_ID = 0  # COCO 'person' class
-
-
 class PersonBoxDetector:
     """YOLO-based human bounding-box detector.
 
@@ -278,8 +275,11 @@ class BoxPersonDetector:
 
     def detect(self, frame_bgr: np.ndarray, timestamp_ms: int) -> list[Person]:
         _ = timestamp_ms
-        boxes = self._person.detect_boxes(frame_bgr)
-        boxes.sort(key=lambda b: -((b[2] - b[0]) * (b[3] - b[1])))
+        return self.build_people(self._person.detect_boxes(frame_bgr))
+
+    def build_people(self, boxes: list[tuple[int, int, int, int]]) -> list[Person]:
+        """Largest people first, capped at max_people, as box-backed skeletons."""
+        boxes = sorted(boxes, key=lambda b: -((b[2] - b[0]) * (b[3] - b[1])))
         return [_person_from_box(box) for box in boxes[: self._max_people]]
 
     def close(self) -> None:
@@ -365,11 +365,9 @@ def _person_from_box(box: tuple[int, int, int, int]) -> Person:
     w = max(float(x2 - x1), 1.0)
     h = max(float(y2 - y1), 1.0)
     points = np.zeros((33, 2), dtype=np.float32)
-    # IMPORTANT: only the landmarks we actually place get non-zero visibility.
-    # Person.bbox() keeps every landmark with visibility > 0.3, so leaving the
-    # un-placed landmarks (eyes, mouth, fingers) at the default would drag the
-    # bounding box to the frame origin (0, 0) and break box-based spike scoring
-    # and the overlay skeleton. Start at zero and light up only placed joints.
+    # Only placed joints get visibility. bbox() keeps landmarks with
+    # visibility > 0.3, so zeroing the rest stops un-placed points (eyes,
+    # fingers) from dragging the box to (0, 0).
     visibility = np.zeros(33, dtype=np.float32)
 
     def pt(idx: int, x_frac: float, y_frac: float) -> None:
@@ -528,12 +526,10 @@ class MultiPersonPoseDetector:
         self._mp = mp
         self._cv2: Any | None = None
         self._max_people = max_people_per_frame
-        # MediaPipe Pose IMAGE mode silently produces zero landmarks on small
-        # crops (sub-200 px). Upscale the shorter side to this many pixels
-        # before inference; coordinates are translated back via the original
-        # crop dimensions so this is a pure quality fix, not a coord shift.
-        # Validated on the gtu wide-angle game clip: 0 → 11 of 11 person
-        # boxes resolved when going from no-upscale to 256 px.
+        # MediaPipe Pose IMAGE mode returns no landmarks on small crops
+        # (sub-200 px). Upscale the shorter side to this many pixels before
+        # inference; landmarks come back normalized, so we translate them with
+        # the original crop size — a quality fix, not a coordinate shift.
         self._min_crop_short_side = max(96, int(min_crop_short_side_px))
         self._person = PersonBoxDetector(
             model_path=person_model_path,
@@ -584,10 +580,8 @@ class MultiPersonPoseDetector:
             if crop_h == 0 or crop_w == 0:
                 people.append(_person_from_box(box))
                 continue
-            # Upscale small crops so MediaPipe's pose landmark estimator has
-            # enough resolution to work with. Normalized landmark coordinates
-            # come back in [0, 1], so we still translate them using the
-            # ORIGINAL crop dimensions — the upscale is purely a quality fix.
+            # Upscale small crops for enough resolution; landmarks come back
+            # normalized, so we translate with the original crop dimensions.
             short = min(crop_h, crop_w)
             if short < self._min_crop_short_side:
                 scale = self._min_crop_short_side / float(short)
