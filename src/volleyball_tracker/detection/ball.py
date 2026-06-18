@@ -22,8 +22,13 @@ from ..config import (
     DEFAULT_BALL_CONF_THRESHOLD,
     DEFAULT_BALL_INFER_SIZE,
     MAX_BALL_GAP_FRAMES,
+    PERSON_CLASS_ID,
     SPORTS_BALL_CLASS_ID,
 )
+
+# Minimum person box accepted from YOLO; below this it's noise, not a player.
+_MIN_PERSON_W_PX = 12
+_MIN_PERSON_H_PX = 24
 
 __all__ = [
     "BallDetection",
@@ -155,6 +160,54 @@ class BallDetector:
     ) -> BallDetection | None:
         dets = self.detect_all(frame_bgr, roi=roi)
         return max(dets, key=lambda d: d.conf) if dets else None
+
+    def detect_people_and_balls(
+        self,
+        frame_bgr: np.ndarray,
+        person_conf: float = 0.25,
+    ) -> tuple[list[tuple[int, int, int, int]], list[BallDetection]]:
+        """One YOLO pass returning both person boxes and ball candidates.
+
+        The person and ball detectors share this model, so inferring both
+        classes in a single forward pass halves pass-1 YOLO cost. Person
+        boxes are post-filtered to ``person_conf`` since the call runs at the
+        lower ball confidence to keep faint-ball recall.
+        """
+        h, w = frame_bgr.shape[:2]
+        results = self._model.predict(
+            source=frame_bgr,
+            classes=[PERSON_CLASS_ID, SPORTS_BALL_CLASS_ID],
+            conf=self._conf,
+            imgsz=self._imgsz,
+            verbose=False,
+            device=self._device,
+            half=self._half,
+        )
+        persons: list[tuple[int, int, int, int]] = []
+        balls: list[BallDetection] = []
+        for r in results:
+            if r.boxes is None or len(r.boxes) == 0:
+                continue
+            xyxy = r.boxes.xyxy.cpu().numpy()
+            confs = r.boxes.conf.cpu().numpy()
+            classes = r.boxes.cls.cpu().numpy().astype(int)
+            for (bx1, by1, bx2, by2), conf, cls in zip(xyxy, confs, classes):
+                if cls == PERSON_CLASS_ID:
+                    if conf < person_conf:
+                        continue
+                    x1, y1 = max(0, int(bx1)), max(0, int(by1))
+                    x2, y2 = min(w, int(bx2)), min(h, int(by2))
+                    if x2 - x1 < _MIN_PERSON_W_PX or y2 - y1 < _MIN_PERSON_H_PX:
+                        continue
+                    persons.append((x1, y1, x2, y2))
+                else:
+                    balls.append(BallDetection(
+                        cx=float((bx1 + bx2) / 2.0),
+                        cy=float((by1 + by2) / 2.0),
+                        radius=float(max(bx2 - bx1, by2 - by1) / 2.0),
+                        conf=float(conf),
+                    ))
+        return persons, balls
 
 
 @dataclass

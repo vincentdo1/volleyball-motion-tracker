@@ -1,6 +1,8 @@
 output_videos/
 cache/
 samples_raw/
+Ultralytics/
+.ultralytics/
 
 *.mp4
 *.mov
@@ -22,7 +24,6 @@ samples_raw/
 
 .env
 .envrc
-.claude/settings.local.json
 
 __pycache__/
 *.py[codz]

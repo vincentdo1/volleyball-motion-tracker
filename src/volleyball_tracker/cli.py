@@ -73,6 +73,24 @@ def _parser() -> argparse.ArgumentParser:
             "static false positives on offline clips). Recommended for live mode."
         ),
     )
+    p.add_argument(
+        "--single-person",
+        action="store_true",
+        help=(
+            "Use the legacy full-frame MediaPipe-only pose detector. Faster on "
+            "single-spiker clips but misses most players in wide-angle game "
+            "footage. Default is YOLO+MediaPipe multi-person."
+        ),
+    )
+    p.add_argument(
+        "--max-people",
+        type=int,
+        default=14,
+        help=(
+            "Maximum number of people to pose-detect per frame (multi-person "
+            "mode only). Default %(default)d."
+        ),
+    )
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose (debug) logging.")
     return p
 
@@ -95,6 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         ball_imgsz=args.imgsz,
         device=args.device,
         roi_tracking=args.roi,
+        multi_person=not args.single_person,
+        max_people_per_frame=args.max_people,
     )
     try:
         run(cfg)
