@@ -1,0 +1,16 @@
+{
+  // Cloudflare Workers + static assets + R2. Paths are relative to this file. See deploy/README.md.
+  "$schema": "../../web/node_modules/wrangler/config-schema.json",
+  "name": "volleyball-motion-tracker",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "../../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Only these paths run the Worker; every other request is a (free) static-asset hit.
+    "run_worker_first": ["/models/*", "/ort/*"]
+  },
+  "r2_buckets": [{ "binding": "MODELS", "bucket_name": "volleyball-motion-tracker-assets" }],
+  "observability": { "enabled": false }
+}

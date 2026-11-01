@@ -60,3 +60,10 @@ volleyball-tracker test_videos/volleyball_spike_attempt_02.mp4 output_videos/vol
 - `--model` / `--imgsz` / `--device` — ball/person detector weights, inference
   size, and device (`cuda`, `mps`, or `cpu`; auto-detected by default).
 - `--roi` — ROI-tracked ball inference (faster; intended for live mode).
+
+## Web app (in development)
+
+`web/` contains the in-browser successor: upload a clip and get tracked, smoothed skeletons for every player plus the
+ball, processed entirely on your device. See [docs/architecture.md](docs/architecture.md); third-party licenses are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
