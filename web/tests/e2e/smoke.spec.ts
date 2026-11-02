@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { ORT_ASSET_BASE } from '../../src/contracts/models';
+import { ensureDiagnostics } from './support';
 
 interface SelfTest {
   ok: boolean;
@@ -31,6 +32,7 @@ test('the app is cross-origin isolated, has a real WebGPU adapter and runs ORT i
   expect(adapter?.isFallbackAdapter).toBe(false);
   expect(`${adapter?.vendor} ${adapter?.architecture}`).not.toMatch(/swiftshader/i);
 
+  await ensureDiagnostics(page);
   await expect(page.getByTestId('cap-isolated')).toHaveText('true');
   await expect(page.getByTestId('cap-webgpu')).toHaveText('real');
   await expect(page.getByTestId('cap-tier')).toHaveText(/^webgpu-/);
