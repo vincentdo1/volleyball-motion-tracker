@@ -16,7 +16,7 @@ test('the app is cross-origin isolated, has a real WebGPU adapter and runs ORT i
   const pageErrors: string[] = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
 
-  const response = await page.goto('/');
+  const response = await page.goto('/#/about');
   const headers = response?.headers() ?? {};
   expect(headers['cross-origin-opener-policy']).toBe('same-origin');
   expect(headers['cross-origin-embedder-policy']).toBe('require-corp');

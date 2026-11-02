@@ -58,9 +58,12 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// The page asks for activation once the user accepts the update prompt.
+// The page asks for activation once the user accepts the update prompt. workbox-window (used by
+// `virtual:pwa-register`) posts `{ type: 'SKIP_WAITING' }`; the bare string is accepted too.
 self.addEventListener('message', (event) => {
-  if (event.data === 'SKIP_WAITING') void self.skipWaiting();
+  const data: unknown = event.data;
+  const type = typeof data === 'object' && data !== null ? (data as { type?: unknown }).type : data;
+  if (type === 'SKIP_WAITING') void self.skipWaiting();
 });
 
 async function cacheFirst(request: Request, cacheName: string): Promise<Response> {
