@@ -54,10 +54,20 @@ body {
   outline-offset: 2px;
 }
 
+/* Reduced motion is resolved in JS (OS setting or the in-app override) and mirrored to data-motion. */
+:root[data-motion="reduce"] *,
+:root[data-motion="reduce"] *::before,
+:root[data-motion="reduce"] *::after {
+  /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat every component transition */
+  animation-duration: 0.01ms !important;
+  /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat every component transition */
+  transition-duration: 0.01ms !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  :root:not([data-motion]) *,
+  :root:not([data-motion]) *::before,
+  :root:not([data-motion]) *::after {
     /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat every component transition */
     animation-duration: 0.01ms !important;
     /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat every component transition */

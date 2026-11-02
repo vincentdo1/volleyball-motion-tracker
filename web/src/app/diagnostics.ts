@@ -15,10 +15,15 @@ declare global {
 
 const SELFTEST_MODEL = 'vballnet-v4c.fp32';
 
-export async function runCapabilityCheck(): Promise<CapabilityReport> {
-  const report = await detectCapabilities();
-  window.__caps = report;
-  return report;
+let capabilityCheck: Promise<CapabilityReport> | null = null;
+
+/** Detects the device once per page load (the app start and the About page share the result). */
+export function runCapabilityCheck(): Promise<CapabilityReport> {
+  capabilityCheck ??= detectCapabilities().then((report) => {
+    window.__caps = report;
+    return report;
+  });
+  return capabilityCheck;
 }
 
 /** Runs the 1 MB ball model once in a module worker on WebGPU (WASM when WebGPU is unusable). */

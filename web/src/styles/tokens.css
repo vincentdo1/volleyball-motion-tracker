@@ -59,6 +59,7 @@
   --bg: oklch(0.985 0.003 260);
   --surface-1: #ffffff;
   --surface-2: oklch(0.96 0.005 260);
+  --glass: rgb(255 255 255 / 0.86);
   --border: oklch(0.2 0.02 260 / 0.1);
   --text: oklch(0.2 0.02 260);
   --text-2: oklch(0.45 0.015 260);

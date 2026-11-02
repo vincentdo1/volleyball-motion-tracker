@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { CapabilityReport } from '@/contracts/capabilities';
 import type { OrtSelfTestResult } from '@/engine/selftest/ort-selftest';
-import { App } from './App';
+import { About } from './About';
 
 const report = {
   crossOriginIsolated: true,
@@ -51,14 +51,14 @@ const selfTest: OrtSelfTestResult = {
   error: null,
 };
 
-vi.mock('./diagnostics', () => ({
+vi.mock('../diagnostics', () => ({
   runCapabilityCheck: vi.fn(async () => report),
   runSelfTest: vi.fn(async () => selfTest),
 }));
 
-describe('App diagnostics shell', () => {
+describe('About diagnostics page', () => {
   it('shows isolation, adapter, tier and the self-test result', async () => {
-    render(<App />);
+    render(<About />);
     expect(await screen.findByText('webgpu-default')).toBeTruthy();
     expect(screen.getByTestId('cap-isolated').textContent).toBe('true');
     expect(screen.getByTestId('cap-webgpu').textContent).toBe('real');
