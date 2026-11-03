@@ -1,11 +1,13 @@
-import { createEngine, type EngineHandle } from '../client';
+import { createEngine, type EngineClientOptions, type EngineHandle } from '../client';
 import type { StubWorkerConfig } from './stub-engine.worker';
 
 /** An engine over the stub worker; `config` may depend on the worker generation (0 = first, then restarts). */
 export function createStubEngine(
   config: StubWorkerConfig | ((generation: number) => StubWorkerConfig) = {},
+  client: Pick<EngineClientOptions, 'stallFloorMs'> = {},
 ): EngineHandle {
   return createEngine({
+    ...client,
     createWorker: (generation) =>
       new Worker(new URL('./stub-engine.worker.ts', import.meta.url), {
         type: 'module',

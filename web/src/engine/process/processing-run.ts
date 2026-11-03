@@ -1,6 +1,7 @@
 import type { EngineError } from '@/contracts/errors';
 import type { ProcessingSettings } from '@/contracts/params';
 import type { FramePipeline, MlModule, OnlineTracker } from '@/contracts/pipeline';
+import type { FinalResult } from '@/contracts/posetrack';
 import { encodePoseTrack } from '@/contracts/posetrack-codec';
 import type { EngineEvent, EngineState } from '@/contracts/protocol';
 import { EngineException, toEngineError } from '../core/engine-exception';
@@ -9,7 +10,7 @@ import type { OpenedClip } from '../ingest/open-clip';
 import { ChunkWriter } from '../store/chunk-writer';
 import { recordSession } from '../store/session-index';
 import type { Manifest, SessionStore } from '../store/session-store';
-import { buildHeader, finalizeResult, type HeaderInput } from './finalize';
+import { buildHeader, finalizeResult, type HeaderInput, type PartialInfo } from './finalize';
 import { FrameLoop, type FrameLoopOutcome } from './frame-loop';
 import { AckWindow, RunControl } from './run-control';
 import type { FramePlan } from './schedule';
@@ -45,6 +46,7 @@ export interface ProcessingRunInit {
   readonly setBusy: (busy: boolean) => void;
   readonly debug: boolean;
   readonly timeoutFloorMs?: number;
+  readonly maxInFlight: number;
 }
 
 const STATS_INTERVAL_MS = 1000;
@@ -58,6 +60,7 @@ export class ProcessingRun {
   private readonly loop: FrameLoop;
   private seq = 0;
   private settled: Promise<void> = Promise.resolve();
+  private partial: Promise<string | null> | undefined;
 
   constructor(private readonly init: ProcessingRunInit) {
     const { host, store, manifest, settings, plan, clip } = init;
@@ -83,6 +86,7 @@ export class ProcessingRun {
       control: this.control,
       emit: (event) => host.emit(event),
       now: host.now,
+      maxInFlight: init.maxInFlight,
       ...(init.timeoutFloorMs === undefined ? {} : { timeoutFloorMs: init.timeoutFloorMs }),
     });
   }
@@ -113,6 +117,27 @@ export class ProcessingRun {
 
   acknowledge(seq: number): void {
     this.ack.ack(seq);
+  }
+
+  /**
+   * `posetrack.json` text for what a run that was cancelled has analysed so far, marked partial in
+   * `extensions.partial`; null when it analysed nothing. Call once the run has stopped.
+   */
+  partialPoseTrack(): Promise<string | null> {
+    this.partial ??= this.buildPartial();
+    return this.partial;
+  }
+
+  private async buildPartial(): Promise<string | null> {
+    const manifest = this.writer.snapshot();
+    const analysedFrames = manifest.chunks.reduce((sum, chunk) => sum + chunk.frames, 0);
+    if (analysedFrames === 0) return null;
+    const info: PartialInfo = {
+      analysedFrames,
+      plannedFrames: this.init.plan.processedCount,
+      analysedUntilUs: manifest.chunks.reduce((end, chunk) => Math.max(end, chunk.endUs), 0),
+    };
+    return JSON.stringify(encodePoseTrack(await this.buildResult(manifest, info)));
   }
 
   private async send(batch: Parameters<ChunkWriter['write']>[0]): Promise<void> {
@@ -156,10 +181,8 @@ export class ProcessingRun {
     }
   }
 
-  private async finalize(): Promise<void> {
-    const { host, clip, store, settings, plan, ml } = this.init;
-    host.setState('finalizing');
-    const manifest = await this.writer.finish();
+  private buildResult(manifest: Manifest, partial?: PartialInfo): Promise<FinalResult> {
+    const { clip, store, settings, plan, ml } = this.init;
     const header = buildHeader({
       ...this.init.header,
       clip: clip.metadata,
@@ -167,7 +190,7 @@ export class ProcessingRun {
       frameStride: plan.stride,
       startedAt: manifest.startedAt,
     });
-    const result = await finalizeResult({
+    return finalizeResult({
       ml,
       store,
       manifest,
@@ -176,7 +199,14 @@ export class ProcessingRun {
       plan,
       settings,
       header,
+      ...(partial ? { partial } : {}),
     });
+  }
+
+  private async finalize(): Promise<void> {
+    const { host, clip, store } = this.init;
+    host.setState('finalizing');
+    const result = await this.buildResult(await this.writer.finish());
     await store.writePoseTrack(JSON.stringify(encodePoseTrack(result)));
     await recordSession({
       fingerprint: clip.metadata.fingerprint,

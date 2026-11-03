@@ -1,10 +1,11 @@
 /**
  * Main-thread side of the engine: `createEngine()` returns the `EngineApi` the UI codes against. It owns the worker,
- * correlates requests with replies, acknowledges streamed chunks, and recovers from a lost GPU by restarting the
- * worker and resuming from the stored checkpoint (plan §3.4).
+ * correlates requests with replies, acknowledges streamed chunks, supervises a processing worker for stalls, and
+ * recovers (lost GPU, stall, failed WebGPU inference) by restarting the worker, stepping down a tier where the
+ * failure calls for it, and resuming from the stored checkpoint (plan §3.4).
  */
 import { DEVICE_TIERS, type DeviceTierId, TIER_STEP_DOWN } from '@/contracts/capabilities';
-import type { EngineError } from '@/contracts/errors';
+import type { EngineError, EngineWarning } from '@/contracts/errors';
 import { engineError } from '@/contracts/errors';
 import {
   type EngineApi,
@@ -22,14 +23,32 @@ import {
   type StartOptions,
 } from '@/contracts/protocol';
 import { EngineException, toEngineError } from './core/engine-exception';
+import { Watchdog } from './process/watchdog';
 
 export interface EngineClientOptions {
   /** Creates the engine worker; `generation` counts restarts (0 for the first worker). */
   readonly createWorker?: (generation: number) => Worker;
+  /** Lower bound of the silence after which a processing worker counts as stalled (tests shorten it). */
+  readonly stallFloorMs?: number;
 }
 
 /** Two GPU losses inside this window step the engine down to a CPU tier. */
 const LOSS_WINDOW_MS = 60_000;
+/**
+ * A processing worker reports progress several times a second. One that stays silent for this long, or for ten
+ * times its usual gap, has its thread blocked (inside the inference runtime): no timer in the worker can see that.
+ */
+const STALL_FLOOR_MS = 12_000;
+const STALL_POLL_MS = 1000;
+
+/** What a recovery restarts the engine with, and what it tells the user. */
+interface RecoveryPlan {
+  /** Tier to restart on; absent keeps the current one. */
+  readonly tier?: DeviceTierId;
+  readonly warning?: EngineWarning;
+}
+
+type Failure = 'gpu-lost' | 'stalled' | 'inference-failed';
 
 interface Pending {
   readonly resolve: () => void;
@@ -50,6 +69,12 @@ export function cpuTierBelow(tier: DeviceTierId, isolated: boolean): DeviceTierI
   return isolated ? next : 'wasm-st';
 }
 
+/** The tier below `tier` on the fallback ladder; without cross-origin isolation the multi-threaded CPU tier is skipped. */
+export function stepDownTier(tier: DeviceTierId, isolated: boolean): DeviceTierId | null {
+  const next = TIER_STEP_DOWN[tier];
+  return next !== null && DEVICE_TIERS[next].backend === 'wasm' && !isolated ? 'wasm-st' : next;
+}
+
 class EngineClient implements EngineApi {
   private worker: Worker | null = null;
   private generation = 0;
@@ -65,8 +90,13 @@ class EngineClient implements EngineApi {
   private startOptions: StartOptions | null = null;
   private losses: number[] = [];
   private recovering = false;
+  private readonly silence: Watchdog;
+  private lastHeardMs = 0;
+  private stallTimer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private readonly options: EngineClientOptions) {}
+  constructor(private readonly options: EngineClientOptions) {
+    this.silence = new Watchdog(options.stallFloorMs ?? STALL_FLOOR_MS);
+  }
 
   get state(): EngineState {
     return this.current;
@@ -163,6 +193,7 @@ class EngineClient implements EngineApi {
   private terminate(): void {
     this.worker?.terminate();
     this.worker = null;
+    this.watchStall(false);
   }
 
   private send(build: (requestId: number) => EngineCommand): Promise<void> {
@@ -175,6 +206,7 @@ class EngineClient implements EngineApi {
   }
 
   private receive(event: EngineEvent): void {
+    this.heard();
     switch (event.type) {
       case 'reply': {
         const pending = this.pending.get(event.requestId);
@@ -185,6 +217,7 @@ class EngineClient implements EngineApi {
       }
       case 'state':
         this.current = event.state;
+        this.watchStall(event.state === 'processing');
         if (!this.recovering && ['opened', 'done', 'ready'].includes(event.state)) this.startOptions = null;
         break;
       case 'ready':
@@ -193,12 +226,14 @@ class EngineClient implements EngineApi {
       case 'opened':
         this.opened = event;
         break;
-      case 'error':
-        if (event.error.code === 'gpu-lost' && this.canRecover()) {
-          void this.recover();
+      case 'error': {
+        const plan = this.canRecover() ? this.recoveryPlan(failureOf(event.error)) : null;
+        if (plan) {
+          void this.recover(plan);
           return;
         }
         break;
+      }
       default:
         break;
     }
@@ -225,7 +260,11 @@ class EngineClient implements EngineApi {
   }
 
   private crashed(reason: string): void {
-    const error = engineError('worker-crashed', `The processing engine stopped: ${reason}`);
+    this.abort(engineError('worker-crashed', `The processing engine stopped: ${reason}`));
+  }
+
+  /** Drops the worker and reports `error` as final. */
+  private abort(error: EngineError): void {
     const previous = this.current;
     this.terminate();
     this.current = 'failed';
@@ -234,36 +273,94 @@ class EngineClient implements EngineApi {
     this.dispatch({ type: 'error', error });
   }
 
-  // ---- GPU-loss recovery ------------------------------------------------------------------------------------
+  // ---- stall supervision ------------------------------------------------------------------------------------
 
-  /** Recovery needs a running session to come back to; otherwise the loss is just an error. */
+  private heard(): void {
+    const now = Date.now();
+    if (this.stallTimer !== undefined) this.silence.observe(now - this.lastHeardMs);
+    this.lastHeardMs = now;
+  }
+
+  /** Watches the worker for silence while it processes; any other state needs no supervision. */
+  private watchStall(processing: boolean): void {
+    clearInterval(this.stallTimer);
+    this.stallTimer = undefined;
+    if (!processing) return;
+    this.lastHeardMs = Date.now();
+    this.stallTimer = setInterval(() => this.checkStall(), STALL_POLL_MS);
+  }
+
+  private checkStall(): void {
+    if (Date.now() - this.lastHeardMs < this.silence.limitMs()) return;
+    const plan = this.canRecover() ? this.recoveryPlan('stalled') : null;
+    if (plan) void this.recover(plan);
+    else this.abort(engineError('inference-timeout', 'The analysis stopped responding.'));
+  }
+
+  // ---- recovery ---------------------------------------------------------------------------------------------
+
+  /** Recovery needs a running session to come back to; otherwise the failure is just an error. */
   private canRecover(): boolean {
     return !this.recovering && this.ready !== null;
   }
 
-  private async recover(): Promise<void> {
-    this.recovering = true;
-    const now = Date.now();
-    this.losses = [...this.losses.filter((t) => now - t < LOSS_WINDOW_MS), now];
-    const { file, ready, startOptions } = this;
-    try {
-      this.failPending(engineError('gpu-lost', 'The GPU was reset; restarting the engine.'));
-      this.terminate();
-      this.generation++;
-      let options = this.initOptions;
-      if (this.losses.length >= 2 && ready) {
-        const tierOverride = cpuTierBelow(ready.tier, ready.capabilities.crossOriginIsolated);
-        options = { ...options, tierOverride };
-        this.dispatch({
-          type: 'warning',
+  /** How to carry on after `failure`, or null when the failure is final (already on the slowest tier, or not ours to handle). */
+  private recoveryPlan(failure: Failure | null): RecoveryPlan | null {
+    const { ready } = this;
+    if (!failure || !ready) return null;
+    const isolated = ready.capabilities.crossOriginIsolated;
+    switch (failure) {
+      case 'gpu-lost': {
+        const now = Date.now();
+        this.losses = [...this.losses.filter((t) => now - t < LOSS_WINDOW_MS), now];
+        if (this.losses.length < 2) return {};
+        const tier = cpuTierBelow(ready.tier, isolated);
+        return {
+          tier,
           warning: {
             code: 'slow-mode',
             message: 'The GPU keeps resetting, so processing continues on the CPU, which is slower.',
-            detail: { tier: tierOverride },
+            detail: { tier, reason: 'gpu-lost' },
           },
-        });
+        };
       }
-      await this.init(options);
+      case 'stalled': {
+        const tier = stepDownTier(ready.tier, isolated);
+        if (!tier) return null;
+        return {
+          tier,
+          warning: {
+            code: 'slow-mode',
+            message: 'Processing stopped responding, so it restarted in a slower mode that works on more devices.',
+            detail: { tier, reason: 'stalled' },
+          },
+        };
+      }
+      case 'inference-failed': {
+        if (ready.backend !== 'webgpu') return null;
+        const tier = cpuTierBelow(ready.tier, isolated);
+        return {
+          tier,
+          warning: {
+            code: 'slow-mode',
+            message: 'The graphics card could not run the analysis, so it continues on the processor, which is slower.',
+            detail: { tier, reason: 'gpu-inference-failed' },
+          },
+        };
+      }
+    }
+  }
+
+  private async recover(plan: RecoveryPlan): Promise<void> {
+    this.recovering = true;
+    const { file, startOptions } = this;
+    try {
+      this.failPending(engineError('gpu-lost', 'The engine is restarting.'));
+      this.terminate();
+      this.generation++;
+      if (plan.tier) this.initOptions = { ...this.initOptions, tierOverride: plan.tier };
+      if (plan.warning) this.dispatch({ type: 'warning', warning: plan.warning });
+      await this.init(this.initOptions);
       if (file) {
         await this.open(file);
         if (startOptions) await this.start({ ...startOptions, resume: true });
@@ -273,6 +370,19 @@ class EngineClient implements EngineApi {
     } finally {
       this.recovering = false;
     }
+  }
+}
+
+/** The failures a restart can cure; a timeout counts as a stall. */
+function failureOf(error: EngineError): Failure | null {
+  switch (error.code) {
+    case 'gpu-lost':
+    case 'inference-failed':
+      return error.code;
+    case 'inference-timeout':
+      return 'stalled';
+    default:
+      return null;
   }
 }
 

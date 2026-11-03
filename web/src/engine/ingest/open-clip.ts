@@ -11,6 +11,7 @@ import type { ClipMetadata, FrameTableColumns, Rotation } from '@/contracts/pose
 import { fail } from '../core/engine-exception';
 import { fingerprintFile } from './fingerprint';
 import { buildFrameTable } from './frame-table';
+import { isMissingMoov } from './mp4-boxes';
 
 export interface OpenedClip {
   readonly file: File;
@@ -25,13 +26,18 @@ export interface OpenedClip {
 /** Lets a sample whose timestamp rounds just below the requested frame still start at that frame. */
 const SEEK_NUDGE_US = 1;
 
-async function videoTrackOf(input: Input): Promise<InputVideoTrack> {
+async function videoTrackOf(input: Input, file: Blob): Promise<InputVideoTrack> {
   try {
     const track = await input.getPrimaryVideoTrack();
     if (track) return track;
   } catch (error) {
     throw fail('unsupported-container', 'This file is not a video format the browser engine can read.', {
       reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (await isMissingMoov(file)) {
+    throw fail('corrupt-file', 'The file is damaged or incomplete: it looks cut short, so its video cannot be read.', {
+      reason: 'the MP4 has media data but no moov box',
     });
   }
   throw fail('no-video-track', 'The file has no video track.');
@@ -55,7 +61,7 @@ async function demuxedTiming(track: InputVideoTrack): Promise<{ timestamp: numbe
 export async function openClip(file: File): Promise<OpenedClip> {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   try {
-    const track = await videoTrackOf(input);
+    const track = await videoTrackOf(input, file);
     const codec = (await track.getCodecParameterString()) ?? track.codec ?? 'unknown';
     if (!(await track.canDecode())) {
       throw fail('unsupported-codec', `This browser cannot decode ${codec} video.`, { codec });

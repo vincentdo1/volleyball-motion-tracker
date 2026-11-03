@@ -16,6 +16,7 @@ import { detectCapabilities } from '../capabilities/detect';
 import { selectTier } from '../capabilities/tier';
 import { ExportManager, isCancellation } from '../export/export-manager';
 import { type OpenedClip, openClip } from '../ingest/open-clip';
+import { MAX_IN_FLIGHT } from '../process/frame-loop';
 import { ProcessingRun, type RunHost } from '../process/processing-run';
 import { makePlan } from '../process/schedule';
 import { replayStoredFrames, resumeTracker } from '../process/tracker-resume';
@@ -33,6 +34,8 @@ export interface EngineDeps {
   readonly now?: () => number;
   /** Lower bound of the per-frame inference timeout (tests shorten it). */
   readonly timeoutFloorMs?: number;
+  /** Overrides the per-backend `MAX_IN_FLIGHT` (tests and tuning). */
+  readonly maxInFlight?: number;
 }
 
 interface Loaded {
@@ -246,6 +249,7 @@ export class EngineCore {
     if (!ready) return this.invalid(command.requestId, 'Opening a file');
     this.session?.clip.dispose();
     this.session = null;
+    this.run = null;
     this.machine.transition('opening');
     try {
       const clip = await openClip(command.file);
@@ -368,6 +372,7 @@ export class EngineCore {
       ledger: this.ledger,
       setBusy: (busy) => loaded.prepared.setBusy(busy),
       debug: this.options.debug === true,
+      maxInFlight: this.deps.maxInFlight ?? MAX_IN_FLIGHT[DEVICE_TIERS[loaded.tierId].backend],
       ...(this.deps.timeoutFloorMs === undefined ? {} : { timeoutFloorMs: this.deps.timeoutFloorMs }),
     });
   }
@@ -453,10 +458,13 @@ export class EngineCore {
 
   private async export(command: Command<'export'>): Promise<void> {
     const session = this.session;
-    if (!this.machine.is('done') || !session) return this.invalid(command.requestId, 'Exporting');
+    if (!this.machine.is('done', 'opened') || !session) return this.invalid(command.requestId, 'Exporting');
     try {
-      const posetrack = await session.store.readPoseTrack();
+      const posetrack = this.machine.is('done')
+        ? await session.store.readPoseTrack()
+        : await this.run?.partialPoseTrack();
       if (posetrack === null) throw fail('export-failed', 'The saved result could not be found.');
+      if (posetrack === undefined) return this.invalid(command.requestId, 'Exporting');
       await this.exports.run(command.exportId, command.request, { file: session.clip.file, posetrack });
       this.reply(command.requestId);
     } catch (error) {

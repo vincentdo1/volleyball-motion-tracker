@@ -49,6 +49,19 @@ export class ChunkWriter {
     return this.manifest;
   }
 
+  /** The manifest as it would read if the open window were closed now; nothing is written or changed. */
+  snapshot(): Manifest {
+    const open = this.open;
+    if (!open) return this.manifest;
+    const window: ManifestChunk = {
+      startUs: open.startUs,
+      endUs: open.lastEndUs,
+      frames: open.frames,
+      bytes: open.bytes,
+    };
+    return { ...this.manifest, chunks: [...this.chunks, window] };
+  }
+
   private async closeWindow(nextStartUs: number | null): Promise<void> {
     const open = this.open;
     if (!open) return;

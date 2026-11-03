@@ -2,6 +2,7 @@ import { BufferTarget, CanvasSource, Mp4OutputFormat, Output } from 'mediabunny'
 import { describe, expect, it } from 'vitest';
 import { isStrictlyIncreasing } from '@/contracts/frame-table';
 import { fixtureFile } from '../testing/stub-engine';
+import { readTopLevelBoxes } from './mp4-boxes';
 import { openClip } from './open-clip';
 
 /** ffprobe truth for the repository clips (frame count, first PTS in us, display size). */
@@ -111,6 +112,16 @@ describe('openClip errors', () => {
     const whole = await fixtureFile('volleyball_spike_attempt_04.mp4');
     const cut = new File([whole.slice(0, 5000)], 'cut.mp4', { type: 'video/mp4' });
     await expect(openClip(cut)).rejects.toMatchObject({ recoverable: false });
+  });
+
+  it('reports an MP4 whose moov box is missing as damaged or incomplete, not as having no video track (M2-6)', async () => {
+    const whole = await fixtureFile('volleyball_spike_attempt_04.mp4');
+    const boxes = await readTopLevelBoxes(whole);
+    expect(boxes.map((b) => b.type)).toContain('moov');
+    const noMoov = boxes.filter((b) => b.type !== 'moov').map((b) => whole.slice(b.offset, b.offset + b.size));
+    const error = await openClip(new File(noMoov, 'no-moov.mp4', { type: 'video/mp4' })).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'corrupt-file', action: 'choose-another-file' });
+    expect((error as Error).message).toMatch(/damaged or incomplete/);
   });
 });
 

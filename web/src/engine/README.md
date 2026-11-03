@@ -37,8 +37,17 @@ All timestamps are integer presentation microseconds (`ptsUs`); parameters are i
 ## Failure handling
 
 Every failure is mapped to an `errors.ts` code. A frame without a result after 10x the median latency (floor 5 s)
-fails with `inference-timeout`. `device.lost` becomes `gpu-lost`; the client swallows it, restarts the worker and
+fails with `inference-timeout`. That watchdog runs in the worker, so it cannot see a worker whose thread is blocked
+inside the inference runtime (M2-1); the client therefore also supervises a processing worker: no message for
+max(12 s, 10x the usual gap) is a stall. A stall, a worker-reported `inference-timeout` and a failed WebGPU inference
+(`inference-failed` on a WebGPU tier, e.g. Firefox M2-10) restart the worker one tier down (stall: next tier of the
+ladder; failed WebGPU inference: the CPU tier), resume from the saved chunks and emit a `slow-mode` warning whose
+`detail.reason` is `stalled` or `gpu-inference-failed`. On the slowest tier the failure is final and reaches the UI as an
+error. `device.lost` becomes `gpu-lost`; the client swallows it, restarts the worker and
 resumes from the saved chunks. A second loss within 60 s moves to a CPU tier and emits a `slow-mode` warning.
+Runtime error text never reaches `message`; it is kept in `detail.reason`.
+Frames in flight: `MAX_IN_FLIGHT` is per backend (WebGPU 1 until the pipeline's shared GPU buffers are concurrency-safe,
+WASM 2); `EngineDeps.maxInFlight` overrides it.
 A 404 or HTML fallback for a model is `model-download`; a hash mismatch is `model-integrity` (cache entry deleted,
 one retry).
 
@@ -46,5 +55,5 @@ one retry).
 
 - `npx vitest run --project unit src/engine`: pure parts (frame table, packing, ETA, fingerprint, CSV, routing).
 - `PORT=5182 npx vitest run --project browser src/engine`: workers, OPFS, WebCodecs, WebGPU, all 11 repository clips.
-- Fault injection lives in `testing/stub-ml.ts` (`failAtPtsUs`, `loseDeviceAtPtsUs`, `hangAtPtsUs`) and
+- Fault injection lives in `testing/stub-ml.ts` (`failAtPtsUs`, `rawFailAtPtsUs`, `loseDeviceAtPtsUs`, `hangAtPtsUs`, `blockAtPtsUs`, `blockWhenConcurrent`) and
   `testing/stub-runtime.ts` (`loseDeviceAfterMs`).

@@ -34,6 +34,12 @@ export interface StubMlOptions {
   readonly loseDeviceAtPtsUs?: number;
   /** `process()` never settles at this PTS (watchdog tests). */
   readonly hangAtPtsUs?: number;
+  /** `process()` blocks the whole worker thread at this PTS: a stall that no timer in the worker can see (M2-1). */
+  readonly blockAtPtsUs?: number;
+  /** Like `blockAtPtsUs`, but when `process()` is entered while another call is running (a pipeline that is not concurrency-safe). */
+  readonly blockWhenConcurrent?: boolean;
+  /** `process()` rejects with a raw runtime error (not an engine error) at this PTS. */
+  readonly rawFailAtPtsUs?: number;
 }
 
 const ZERO_TIMINGS: StageTimings = { preMs: 0, detectorMs: 0, poseMs: 0, ballMs: 0, postMs: 0, totalMs: 0 };
@@ -70,6 +76,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Holds the worker thread, like a synchronous wait inside the inference runtime (the client terminates the worker). */
+function blockThread(): void {
+  const until = performance.now() + 60_000;
+  while (performance.now() < until);
+}
+
 function createStubPipeline(
   options: StubMlOptions,
   settings: ReturnType<typeof initialSettingsForTier>,
@@ -77,6 +89,7 @@ function createStubPipeline(
   const personCount = options.persons ?? 4;
   const ballWindow = options.ballWindow ?? 3;
   let pendingBall: number[] = [];
+  let running = 0;
   const flushBall = (): BallFrameCandidates[] => {
     const results = pendingBall.map((ptsUs) => ({ ptsUs, candidates: [stubBallAt(ptsUs)] }));
     pendingBall = [];
@@ -89,15 +102,25 @@ function createStubPipeline(
       if (input.source.kind === 'video-frame' && input.source.frame.codedWidth === 0) {
         throw new Error('stub pipeline received a closed VideoFrame');
       }
+      if (options.blockWhenConcurrent && running > 0) blockThread();
+      if (input.ptsUs === options.blockAtPtsUs) blockThread();
       // Like the real ball ring, the window advances synchronously in call order, whatever the latency.
       let ballResults: BallFrameCandidates[] = [];
       if (input.runBall) {
         pendingBall.push(input.ptsUs);
         if (pendingBall.length >= ballWindow) ballResults = flushBall();
       }
-      if (options.delayMs) await sleep(options.delayMs);
+      running++;
+      try {
+        if (options.delayMs) await sleep(options.delayMs);
+      } finally {
+        running--;
+      }
       if (input.ptsUs === options.hangAtPtsUs) await new Promise<never>(() => undefined);
       if (input.ptsUs === options.loseDeviceAtPtsUs) throw fail('gpu-lost', 'stub: GPUDevice lost');
+      if (input.ptsUs === options.rawFailAtPtsUs) {
+        throw new Error('failed to call OrtRun(). ERROR_CODE: 1, ERROR_MESSAGE: Shader "Pad" parsing error');
+      }
       if (input.ptsUs === options.failAtPtsUs) throw fail('inference-failed', 'stub: inference failed');
       const persons: RawPerson[] = [];
       for (let i = 0; i < personCount; i++) {

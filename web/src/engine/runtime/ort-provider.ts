@@ -18,9 +18,21 @@ function artifactsOf(tier: DeviceTier): { detector: ModelArtifact; pose: ModelAr
   };
 }
 
-function modelInfo(artifact: ModelArtifact, backend: ModelInfo['backend']): ModelInfo {
-  const dims = artifact.io.inputs[0]?.dims ?? [];
-  const [height, width] = dims.slice(-2);
+/**
+ * [width, height] of a model's input: the lock's static dims, and for the detector (whose lock dims are symbolic)
+ * the square size the tier runs it at.
+ */
+function inputSizeOf(artifact: ModelArtifact, tier: DeviceTier): readonly [number, number] {
+  const [height, width] = (artifact.io.inputs[0]?.dims ?? []).slice(-2);
+  const dynamic = artifact.role === 'person-detector' ? tier.detectorInputSize : undefined;
+  const size = [typeof width === 'number' ? width : dynamic, typeof height === 'number' ? height : dynamic];
+  if (size[0] === undefined || size[1] === undefined) {
+    throw fail('internal', `The input size of model ${artifact.id} is not known.`);
+  }
+  return [size[0], size[1]];
+}
+
+export function modelInfo(artifact: ModelArtifact, tier: DeviceTier): ModelInfo {
   return {
     id: artifact.id,
     role: artifact.role,
@@ -28,8 +40,8 @@ function modelInfo(artifact: ModelArtifact, backend: ModelInfo['backend']): Mode
     version: artifact.version,
     precision: artifact.precision,
     sha256: artifact.sha256,
-    backend,
-    inputSize: [typeof width === 'number' ? width : 0, typeof height === 'number' ? height : 0],
+    backend: tier.backend,
+    inputSize: inputSizeOf(artifact, tier),
     license: artifact.license,
   };
 }
@@ -84,7 +96,7 @@ export function createOrtRuntimeProvider(manager: ModelManagerOptions = {}): Run
         models: { detector: artifacts.detector, pose: artifacts.pose, ball: artifacts.ball },
         tier,
       };
-      const infos = [artifacts.detector, artifacts.pose, artifacts.ball].map((a) => modelInfo(a, tier.backend));
+      const infos = [artifacts.detector, artifacts.pose, artifacts.ball].map((a) => modelInfo(a, tier));
       return {
         runtime,
         models: infos,

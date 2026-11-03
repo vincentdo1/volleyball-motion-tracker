@@ -29,11 +29,15 @@ export async function loadBatches(store: SessionStore, manifest: Manifest): Prom
   return batches;
 }
 
-/** Final per-frame flags: what the batches recorded, `SKIPPED` for strided/out-of-range frames, else `DECODE_FAILED`. */
+/**
+ * Final per-frame flags: what the batches recorded, `SKIPPED` for strided/out-of-range frames, else `unreached`
+ * (`DECODE_FAILED` for a finished run, `SKIPPED` for a partial one).
+ */
 export function finalFrameTable(
   table: FrameTableColumns,
   batches: readonly PackedFrameBatch[],
   plan: FramePlan,
+  unreached: number = FrameFlag.DECODE_FAILED,
 ): FrameTableColumns {
   const flags = new Uint8Array(table.ptsUs.length);
   for (const batch of batches) {
@@ -43,7 +47,7 @@ export function finalFrameTable(
     }
   }
   for (let i = 0; i < flags.length; i++) {
-    if (flags[i] === 0) flags[i] = plan.isProcessed(i) ? FrameFlag.DECODE_FAILED : FrameFlag.SKIPPED;
+    if (flags[i] === 0) flags[i] = plan.isProcessed(i) ? unreached : FrameFlag.SKIPPED;
   }
   return { ptsUs: table.ptsUs, durationUs: table.durationUs, flags };
 }
@@ -103,6 +107,14 @@ export function buildHeader(input: HeaderInput, now: Date = new Date()): PoseTra
   };
 }
 
+/** Recorded in `extensions.partial` of a document made from a run that was cancelled before the end. */
+export interface PartialInfo {
+  readonly analysedFrames: number;
+  readonly plannedFrames: number;
+  /** End of the last analysed frame. */
+  readonly analysedUntilUs: number;
+}
+
 export interface FinalizeInput {
   readonly ml: MlModule;
   readonly store: SessionStore;
@@ -112,12 +124,19 @@ export interface FinalizeInput {
   readonly plan: FramePlan;
   readonly settings: ProcessingSettings;
   readonly header: PoseTrackHeader;
+  /** Set when the run did not reach the end of the plan. */
+  readonly partial?: PartialInfo;
 }
 
 /** Offline pass over the stored raw chunks: the same input whether the run was uninterrupted or resumed. */
 export async function finalizeResult(input: FinalizeInput): Promise<FinalResult> {
   const batches = await loadBatches(input.store, input.manifest);
-  const frames = finalFrameTable(input.frameTable, batches, input.plan);
+  const frames = finalFrameTable(
+    input.frameTable,
+    batches,
+    input.plan,
+    input.partial ? FrameFlag.SKIPPED : FrameFlag.DECODE_FAILED,
+  );
   const { tracks, ball } = input.ml.finalize({
     clip: input.clip,
     frames,
@@ -125,5 +144,8 @@ export async function finalizeResult(input: FinalizeInput): Promise<FinalResult>
     ball: ballCandidatesOf(batches),
     settings: input.settings,
   });
-  return { header: input.header, frames, tracks, ball };
+  const header = input.partial
+    ? { ...input.header, extensions: { ...input.header.extensions, partial: input.partial } }
+    : input.header;
+  return { header, frames, tracks, ball };
 }

@@ -11,6 +11,14 @@ export interface StubRuntimeOptions {
 
 const session = {} as InferenceSession;
 
+/** A well-formed (64 hex digits) digest that differs per model id. */
+function sha256Of(id: string): string {
+  return Array.from(id, (c) => c.charCodeAt(0).toString(16).padStart(2, '0'))
+    .join('')
+    .padEnd(64, '0')
+    .slice(0, 64);
+}
+
 function modelInfo(request: RuntimeRequest, role: ModelInfo['role'], id: string): ModelInfo {
   return {
     id,
@@ -18,7 +26,7 @@ function modelInfo(request: RuntimeRequest, role: ModelInfo['role'], id: string)
     name: `stub ${id}`,
     version: 'stub',
     precision: 'fp32',
-    sha256: id.padEnd(64, '0'),
+    sha256: sha256Of(id),
     backend: request.tier.backend,
     inputSize: [request.tier.detectorInputSize, request.tier.detectorInputSize],
     license: 'Apache-2.0',

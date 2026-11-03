@@ -1,4 +1,6 @@
 import type { VideoSample } from 'mediabunny';
+import type { ExecutionBackend } from '@/contracts/capabilities';
+import { type EngineError, engineError, isEngineError } from '@/contracts/errors';
 import { indexAtOrBefore } from '@/contracts/frame-table';
 import type { FrameInput, FramePipeline, OnlineTracker, RawFrameResult, StageTimings } from '@/contracts/pipeline';
 import { FrameFlag } from '@/contracts/posetrack';
@@ -13,8 +15,12 @@ import type { FramePlan } from './schedule';
 import type { Streamer } from './streamer';
 import { Watchdog } from './watchdog';
 
-/** Frames the ML pipeline may work on at once (double buffering on the GPU, plan §3.2). */
-export const MAX_IN_FLIGHT = 2;
+/**
+ * Frames the ML pipeline may work on at once. The WebGPU pipeline is fed one frame at a time until its shared GPU
+ * buffers are concurrency-safe: with two frames in flight the engine worker blocks inside ORT for good (M2-1).
+ * The CPU tiers overlap the next frame's preprocessing with the current inference.
+ */
+export const MAX_IN_FLIGHT: Readonly<Record<ExecutionBackend, number>> = { webgpu: 1, wasm: 2 };
 const STAGE_EMA = 0.2;
 
 export interface FrameLoopDeps {
@@ -33,6 +39,8 @@ export interface FrameLoopDeps {
   readonly emit: (event: EngineEvent) => void;
   readonly now: () => number;
   readonly timeoutFloorMs?: number;
+  /** Frames the pipeline may work on at once (see `MAX_IN_FLIGHT`). */
+  readonly maxInFlight: number;
 }
 
 export type FrameLoopOutcome = 'completed' | 'cancelled';
@@ -46,6 +54,15 @@ interface InFlight {
 function indexOfPts(ptsUs: ArrayLike<number>, value: number): number {
   const i = indexAtOrBefore(ptsUs, value);
   return i >= 0 && ptsUs[i] === value ? i : -1;
+}
+
+/** A raw runtime error becomes a plain-language `inference-failed`; the runtime's own text moves to `detail.reason`. */
+function inferenceError(error: unknown): EngineError {
+  const mapped = toEngineError(error, 'inference-failed');
+  if (mapped.code !== 'inference-failed' || error instanceof EngineException || isEngineError(error)) return mapped;
+  return engineError('inference-failed', 'The analysis models could not process this video on this device.', {
+    reason: mapped.message,
+  });
 }
 
 function withTimeout<T>(work: Promise<T>, limitMs: number, ptsUs: number): Promise<T> {
@@ -62,7 +79,7 @@ function withTimeout<T>(work: Promise<T>, limitMs: number, ptsUs: number): Promi
 
 /**
  * Pull-based decode loop: one sample at a time from the decoder (which itself queues at most 4), at most
- * `MAX_IN_FLIGHT` frames inside the ML pipeline, results consumed strictly in presentation order, and every
+ * `maxInFlight` frames inside the ML pipeline, results consumed strictly in presentation order, and every
  * decoded frame closed in a `finally` (plan §3.2, 04 §4.2).
  */
 export class FrameLoop {
@@ -144,7 +161,7 @@ export class FrameLoop {
       const index = indexOfPts(clip.frameTable.ptsUs, ptsUs);
       if (index >= plan.endIndex) return 'end';
       if (index < 0 || !plan.isProcessed(index)) return control.cancelled ? 'cancelled' : 'continue';
-      while (this.inFlight.length >= MAX_IN_FLIGHT) await this.consumeOldest();
+      while (this.inFlight.length >= this.deps.maxInFlight) await this.consumeOldest();
       if (control.cancelled) return 'cancelled';
       this.submit(sample, index, ptsUs, releaseSample);
       handedOver = true;
@@ -199,7 +216,7 @@ export class FrameLoop {
     try {
       result = await head.result;
     } catch (error) {
-      throw new EngineException(toEngineError(error, 'inference-failed'));
+      throw new EngineException(inferenceError(error));
     }
     const { tracker, streamer } = this.deps;
     this.watchdog.observe(this.deps.now() - head.startedMs);

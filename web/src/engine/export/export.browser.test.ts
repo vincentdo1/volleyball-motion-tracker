@@ -43,7 +43,7 @@ describe('JSON and CSV export', () => {
     expect(exported.fileName).toBe('volleyball_spike_attempt_04.posetrack.json');
     expect(exported.mimeType).toBe('application/json');
     const doc = JSON.parse(await exported.blob.text()) as PoseTrackDocument;
-    expect((validate.errors ?? validate(doc)) ? validate.errors : null).toBeNull();
+    expect(validate(doc), JSON.stringify(validate.errors)).toBe(true);
     expect(validatePoseTrackSemantics(doc)).toEqual([]);
     expect(doc.clip.frameCount).toBe(181);
     expect(doc.tracks.length).toBe(4);
@@ -143,5 +143,60 @@ describe('MP4 export', () => {
     expect(errors.length).toBe(0);
     const json = await api.exportResult({ kind: 'json' });
     expect(json.blob.size).toBeGreaterThan(1000);
+  }, 60_000);
+});
+
+describe('exporting a kept partial result (M2-4)', () => {
+  async function cancelled(clip: string): Promise<{ api: EngineHandle; analysed: number }> {
+    const api = createStubEngine({ ml: { delayMs: 8 } });
+    engine = api;
+    const chunks: EngineEventOf<'chunk'>[] = [];
+    api.on('chunk', (e) => chunks.push(e));
+    await api.init({ tierOverride: 'webgpu-default' });
+    await api.open(await fixtureFile(clip));
+    await api.start();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await api.cancel();
+    return { api, analysed: chunks.reduce((n, c) => n + c.batch.count, 0) };
+  }
+
+  it('exports schema-valid JSON marked partial, and CSV, from the frames analysed so far', async () => {
+    const { api, analysed } = await cancelled('volleyball_spike_attempt_04.mp4');
+    expect(api.state).toBe('opened');
+    const json = await api.exportResult({ kind: 'json' });
+    const doc = JSON.parse(await json.blob.text()) as PoseTrackDocument;
+    expect(validate(doc), JSON.stringify(validate.errors)).toBe(true);
+    expect(validatePoseTrackSemantics(doc)).toEqual([]);
+    const partial = doc.extensions?.partial as { analysedFrames: number; plannedFrames: number };
+    expect(partial.plannedFrames).toBe(181);
+    expect(partial.analysedFrames).toBeGreaterThan(0);
+    expect(partial.analysedFrames).toBeLessThan(181);
+    expect(partial.analysedFrames).toBeLessThanOrEqual(analysed);
+    expect(doc.frames.ptsUs.length).toBe(181);
+    const processed = doc.frames.flags.filter((f) => (f & 1) !== 0).length;
+    expect(processed).toBe(partial.analysedFrames);
+    const csv = (await (await api.exportResult({ kind: 'csv' })).blob.text()).trimEnd().split('\n');
+    expect(csv.length - 1).toBe(processed * 4 * 26 + processed);
+  }, 60_000);
+
+  it('exports the overlay video of a partial result', async () => {
+    const { api } = await cancelled('volleyball_spike_attempt_04.mp4');
+    const exported = await api.exportResult(mp4);
+    const out = await openClip(new File([exported.blob], 'out.mp4', { type: 'video/mp4' }));
+    expect(out.metadata.frameCount).toBe(181);
+    out.dispose();
+  }, 60_000);
+
+  it('refuses to export when nothing was analysed, and does not export another clip after a new open', async () => {
+    const api = createStubEngine();
+    engine = api;
+    await api.init({ tierOverride: 'webgpu-default' });
+    await api.open(await fixtureFile('volleyball_spike_attempt_04.mp4'));
+    await expect(api.exportResult({ kind: 'json' })).rejects.toMatchObject({ code: 'invalid-state' });
+    const done = new Promise<void>((resolve) => api.on('state', (e) => e.state === 'done' && resolve()));
+    await api.start();
+    await done;
+    await api.open(await fixtureFile('volleyball_spike_attempt_03.mp4'));
+    await expect(api.exportResult({ kind: 'json' })).rejects.toMatchObject({ code: 'invalid-state' });
   }, 60_000);
 });
