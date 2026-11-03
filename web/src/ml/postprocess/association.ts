@@ -1,8 +1,8 @@
 /**
  * Offline association of the online tracklets (the whole clip is known): duplicate merge, stitching across gaps,
- * dropping short tracks and renumbering by first appearance. All thresholds are in seconds (`TrackerParams`).
+ * dropping short tracks and static objects, and renumbering by first appearance. All thresholds are in seconds (`TrackerParams`).
  */
-import { PERSON_KP_VALUES } from '@/contracts/halpe26';
+import { HALPE26_NUM_KEYPOINTS, KP_VALUES, PERSON_KP_VALUES } from '@/contracts/halpe26';
 import type { TrackerParams } from '@/contracts/params';
 import type { TrackColumns } from '@/contracts/posetrack';
 import { boxArea, iou, oksPair, type Pose } from '../geometry';
@@ -30,6 +30,16 @@ const DUPLICATE_BOX_IOU = 0.6;
 /** Stitch tolerance on the position error, in box heights: a base plus an allowance that grows with the gap. */
 const STITCH_BASE_TOLERANCE_H = 0.5;
 const STITCH_TOLERANCE_PER_S_H = 1.0;
+
+/**
+ * A static object (a net post, a pole) that the detector takes for a person: its box never moves and its skeleton
+ * never fits. A track is dropped when, over at least `STATIC_MIN_DURATION_S`, the box centre stays within
+ * `STATIC_MAX_SPREAD_H` box heights of its mean (a standing player sways more) and the mean joint score stays under
+ * `STATIC_MAX_POSE_CONFIDENCE` (players score 0.55-0.7 on the bake-off clips, posts 0.08-0.4).
+ */
+const STATIC_MIN_DURATION_S = 1;
+const STATIC_MAX_SPREAD_H = 0.05;
+const STATIC_MAX_POSE_CONFIDENCE = 0.4;
 
 function poseOf(track: TrackColumns, index: number): Pose {
   return {
@@ -189,6 +199,39 @@ export function dropShort(
   return tracklets.filter((t) => durationS(t) >= minS);
 }
 
+/** Mean joint score over a track's samples (missing joints count as 0). */
+function meanPoseConfidence(track: TrackColumns): number {
+  let sum = 0;
+  for (let i = 0; i < sampleCount(track); i++) {
+    for (let k = 0; k < HALPE26_NUM_KEYPOINTS; k++) {
+      const score = track.kp[i * PERSON_KP_VALUES + k * KP_VALUES + 2] as number;
+      if (score > 0) sum += score;
+    }
+  }
+  return sum / (sampleCount(track) * HALPE26_NUM_KEYPOINTS);
+}
+
+/** Spread of the box centre around its mean, in median box heights. */
+function centreSpreadH(track: TrackColumns): number {
+  const n = sampleCount(track);
+  const centres = Array.from({ length: n }, (_, i) => boxCentre(track, i));
+  const mx = centres.reduce((sum, c) => sum + c.cx, 0) / n;
+  const my = centres.reduce((sum, c) => sum + c.cy, 0) / n;
+  const variance = centres.reduce((sum, c) => sum + (c.cx - mx) ** 2 + (c.cy - my) ** 2, 0) / n;
+  const heights = Array.from({ length: n }, (_, i) => boxHeight(track, i)).sort((a, b) => a - b);
+  return Math.sqrt(variance) / (heights[Math.floor(n / 2)] as number);
+}
+
+/** Drops tracks that are static objects mistaken for people (see `STATIC_MIN_DURATION_S`). */
+export function dropStaticObjects(tracklets: readonly TrackColumns[]): TrackColumns[] {
+  return tracklets.filter(
+    (t) =>
+      durationS(t) < STATIC_MIN_DURATION_S ||
+      centreSpreadH(t) >= STATIC_MAX_SPREAD_H ||
+      meanPoseConfidence(t) >= STATIC_MAX_POSE_CONFIDENCE,
+  );
+}
+
 /** Renumbers 1..n by first appearance (ties by previous id). */
 export function renumber(tracklets: readonly TrackColumns[]): TrackColumns[] {
   return [...tracklets]
@@ -202,5 +245,5 @@ export function associate(
   params: TrackerParams,
   clipSpanS: number,
 ): TrackColumns[] {
-  return renumber(dropShort(stitch(mergeDuplicates(tracklets, params), params), params, clipSpanS));
+  return renumber(dropStaticObjects(dropShort(stitch(mergeDuplicates(tracklets, params), params), params, clipSpanS)));
 }

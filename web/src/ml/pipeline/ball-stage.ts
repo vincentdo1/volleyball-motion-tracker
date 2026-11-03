@@ -8,6 +8,7 @@ import type { BallParams } from '@/contracts/params';
 import type { BallFrameCandidates } from '@/contracts/pipeline';
 import { BALL_CLIP_LENGTH, decodeBallFrame } from '../models/vballnet';
 import type { BallClip, PreparedFrame } from './inputs';
+import { runSession } from './session-run';
 
 /** Without a single ball candidate this long into the clip the model is switched off (portrait or close-up footage). */
 const NO_BALL_GIVE_UP_S = 3;
@@ -62,10 +63,15 @@ export class BallStage {
     return this.run();
   }
 
+  /** One model run on the clip as it stands. */
+  runModel(): Promise<InferenceSession.OnnxValueMapType> {
+    return runSession(this.session, 'ball', { clip: this.clip.tensor() });
+  }
+
   /** Runs the model on whatever is in the clip, decoding the frames collected so far. */
   async run(): Promise<BallFrameCandidates[]> {
     const t0 = performance.now();
-    const outputs = await this.session.run({ clip: this.clip.tensor() });
+    const outputs = await this.runModel();
     const heatmaps = outputs.heatmaps?.data as Float32Array;
     const results = this.pending.map(
       (ptsUs, t): BallFrameCandidates => ({

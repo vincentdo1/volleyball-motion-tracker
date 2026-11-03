@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { INITIAL_TRACKER_PARAMS } from '@/contracts/params';
 import { type Path, trackletOf } from '../__fixtures__/scene';
-import { associate, dropShort, mergeDuplicates, renumber, stitch } from './association';
+import { associate, dropShort, dropStaticObjects, mergeDuplicates, renumber, stitch } from './association';
 import { durationS, firstUs, lastUs, sampleCount } from './tracklets';
 
 const P = INITIAL_TRACKER_PARAMS;
@@ -107,5 +107,34 @@ describe('dropShort and renumber', () => {
     );
     expect(out).toHaveLength(1);
     expect(out[0]?.id).toBe(1);
+  });
+});
+
+describe('dropStaticObjects', () => {
+  /** A tracklet whose skeleton scores are scaled to `jointScore` (a post gets a poor fit, a player a good one). */
+  function withPose(id: number, path: Path, from: number, to: number, jointScore: number) {
+    const track = trackletOf(id, path, from, to, 30, 1);
+    for (let i = 2; i < track.kp.length; i += 3) track.kp[i] = jointScore;
+    return track;
+  }
+
+  it('drops a long track that never moves and never fits a skeleton', () => {
+    const post = withPose(1, walk(560, 0), 0, 6, 0.25);
+    expect(dropStaticObjects([post])).toEqual([]);
+  });
+
+  it('keeps a player who stands still (good skeleton), a mover with a poor skeleton, and a brief static blip', () => {
+    const standing = withPose(1, walk(560, 0), 0, 6, 0.7);
+    const walkingPoor = withPose(2, walk(100, 120), 0, 6, 0.25);
+    const blip = withPose(3, walk(900, 0), 0, 0.8, 0.25);
+    expect(dropStaticObjects([standing, walkingPoor, blip]).map((t) => t.id)).toEqual([1, 2, 3]);
+  });
+
+  it('is part of the association: the post goes, the walking player stays', () => {
+    const post = withPose(1, walk(560, 0), 0, 6, 0.25);
+    const player = withPose(2, walk(300, 100), 0, 6, 0.7);
+    const out = associate([post, player], P, 6);
+    expect(out).toHaveLength(1);
+    expect(Math.round((out[0]?.box[0] ?? 0) / 100)).toBeLessThan(5);
   });
 });

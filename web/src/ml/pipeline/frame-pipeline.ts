@@ -2,6 +2,10 @@
  * The per-frame inference pipeline: D-FINE person detector -> RTMPose on every person (one batched call, or one call
  * per person on WASM) -> OKS-NMS, plus the VballNet ball model on a nine-frame clip. On frames the scheduler marks as
  * detector-less, boxes come from the previous frame's keypoints instead.
+ *
+ * `process()` may be called again before the previous call settles (the engine keeps frames in flight). Calls overlap
+ * only while a frame is opened (decoded and read back); everything that touches the sessions, the shared GPU input
+ * buffers or the previous-frame state runs one frame at a time, in call order.
  */
 
 import { PERSON_KP_VALUES } from '@/contracts/halpe26';
@@ -22,6 +26,8 @@ import { type DetectorOutput, DFINE_IO, decodeDetections } from '../models/dfine
 import { cropRegions, decodeSimcc, POSE_IO, planPoseBatches } from '../models/rtmpose';
 import { BallStage } from './ball-stage';
 import { createFrameInputs, type FrameInputs, type PreparedFrame } from './inputs';
+import { runSession } from './session-run';
+import { TurnQueue } from './turns';
 
 /** Per-frame cap on persons sent to the pose model. */
 const MAX_PERSONS = 64;
@@ -84,6 +90,7 @@ class Pipeline implements FramePipeline {
   /** Persons of the previous processed frame, the source of propagated boxes. */
   private previous: readonly Pose[] = [];
   private readonly ball: BallStage | null;
+  private readonly turns = new TurnQueue();
 
   constructor(
     private readonly runtime: MlRuntime,
@@ -94,7 +101,11 @@ class Pipeline implements FramePipeline {
     this.ball = ball && settings.ball.source !== 'detector' ? new BallStage(ball, inputs.clip, settings.ball) : null;
   }
 
-  async warmup(): Promise<StageTimings> {
+  warmup(): Promise<StageTimings> {
+    return this.turns.exclusive(() => this.warmupNow());
+  }
+
+  private async warmupNow(): Promise<StageTimings> {
     const { settings, runtime } = this;
     const blank = blankInput(runtime, settings);
     const frame = await this.inputs.open(blank.input);
@@ -115,12 +126,12 @@ class Pipeline implements FramePipeline {
       frame.poseTensor([region], 1);
       const preMs = now() - preStart;
       const detectorMs = await steadyMs(() =>
-        this.runtime.sessions.detector.run({ [DFINE_IO.input]: frame.detectorTensor(size) }),
+        runSession(this.runtime.sessions.detector, 'person-detector', { [DFINE_IO.input]: frame.detectorTensor(size) }),
       );
       let poseMs = 0;
       for (const bucket of buckets) {
         const ms = await steadyMs(() =>
-          this.runtime.sessions.pose.run({
+          runSession(this.runtime.sessions.pose, 'pose', {
             [POSE_IO.input]: frame.poseTensor(
               Array.from({ length: bucket }, () => region),
               bucket,
@@ -133,9 +144,7 @@ class Pipeline implements FramePipeline {
       if (this.ball) {
         frame.addToClip(0);
         this.inputs.clip.padFrom(1);
-        ballMs = await steadyMs(
-          () => this.runtime.sessions.ball?.run({ clip: this.inputs.clip.tensor() }) ?? Promise.resolve(),
-        );
+        ballMs = await steadyMs(() => this.ball?.runModel() ?? Promise.resolve());
       }
       return { preMs, detectorMs, poseMs, ballMs, postMs: 0, totalMs: preMs + detectorMs + poseMs + ballMs };
     } finally {
@@ -145,63 +154,76 @@ class Pipeline implements FramePipeline {
   }
 
   async process(input: FrameInput): Promise<RawFrameResult> {
-    const { settings } = this;
-    const start = now();
     const clock = new StageClock();
-
-    const frame = await clock.time('pre', () => this.inputs.open(input));
+    const turn = this.turns.reserve();
     try {
-      let detections: DetectorOutput | null = null;
-      let boxes: ScoredBox[];
-      if (input.runDetector) {
-        detections = await this.detect(frame, input, clock);
-        boxes = detections.persons.filter((p) => p.score >= settings.detector.scoreThreshold).slice(0, MAX_PERSONS);
-      } else {
-        boxes = propagate(this.previous, input.displayWidth, input.displayHeight).slice(0, MAX_PERSONS);
+      const frame = await clock.time('pre', () => this.inputs.open(input));
+      try {
+        await turn.ready;
+        return await this.processOpen(frame, input, clock);
+      } finally {
+        frame.close();
       }
-      const poses = await this.estimatePoses(frame, boxes, clock);
-      const kept = await clock.time('post', () => oksNms(poses, settings.pose.oksNms));
-      this.previous = kept;
-
-      const origin = input.runDetector ? 'detector' : 'propagated';
-      const persons: RawPerson[] = kept.map((p) => ({ box: p.box, score: p.score, keypoints: p.keypoints, origin }));
-      for (const low of detections?.persons ?? []) {
-        if (low.score >= settings.detector.scoreThreshold) continue;
-        persons.push({ box: low.box, score: low.score, keypoints: nanKeypoints(), origin: 'detector-low' });
-      }
-
-      const ballResults = await this.addBallFrame(frame, input);
-      return {
-        ptsUs: input.ptsUs,
-        persons,
-        detectorBallCandidates: (detections?.balls ?? []).map(ballCandidate),
-        ballResults,
-        timings: {
-          preMs: clock.ms.pre,
-          detectorMs: clock.ms.detector,
-          poseMs: clock.ms.pose,
-          ballMs: this.ball?.takeMs() ?? 0,
-          postMs: clock.ms.post,
-          totalMs: now() - start,
-        },
-      };
     } finally {
-      frame.close();
+      turn.release();
     }
   }
 
-  async flush(): Promise<readonly BallFrameCandidates[]> {
-    return (await this.ball?.flush()) ?? [];
+  /** Runs the models on an opened frame; the time spent waiting for the turn is not counted. */
+  private async processOpen(frame: PreparedFrame, input: FrameInput, clock: StageClock): Promise<RawFrameResult> {
+    const { settings } = this;
+    const openMs = clock.ms.pre;
+    const start = now();
+    let detections: DetectorOutput | null = null;
+    let boxes: ScoredBox[];
+    if (input.runDetector) {
+      detections = await this.detect(frame, input, clock);
+      boxes = detections.persons.filter((p) => p.score >= settings.detector.scoreThreshold).slice(0, MAX_PERSONS);
+    } else {
+      boxes = propagate(this.previous, input.displayWidth, input.displayHeight).slice(0, MAX_PERSONS);
+    }
+    const poses = await this.estimatePoses(frame, boxes, clock);
+    const kept = await clock.time('post', () => oksNms(poses, settings.pose.oksNms));
+    this.previous = kept;
+
+    const origin = input.runDetector ? 'detector' : 'propagated';
+    const persons: RawPerson[] = kept.map((p) => ({ box: p.box, score: p.score, keypoints: p.keypoints, origin }));
+    for (const low of detections?.persons ?? []) {
+      if (low.score >= settings.detector.scoreThreshold) continue;
+      persons.push({ box: low.box, score: low.score, keypoints: nanKeypoints(), origin: 'detector-low' });
+    }
+
+    const ballResults = await this.addBallFrame(frame, input);
+    return {
+      ptsUs: input.ptsUs,
+      persons,
+      detectorBallCandidates: (detections?.balls ?? []).map(ballCandidate),
+      ballResults,
+      timings: {
+        preMs: clock.ms.pre,
+        detectorMs: clock.ms.detector,
+        poseMs: clock.ms.pose,
+        ballMs: this.ball?.takeMs() ?? 0,
+        postMs: clock.ms.post,
+        totalMs: openMs + now() - start,
+      },
+    };
   }
 
-  async dispose(): Promise<void> {
-    this.inputs.dispose();
+  flush(): Promise<readonly BallFrameCandidates[]> {
+    return this.turns.exclusive(async () => (await this.ball?.flush()) ?? []);
+  }
+
+  dispose(): Promise<void> {
+    return this.turns.exclusive(async () => this.inputs.dispose());
   }
 
   private async detect(frame: PreparedFrame, input: FrameInput, clock: StageClock): Promise<DetectorOutput> {
     const { settings } = this;
     const tensor = await clock.time('pre', () => frame.detectorTensor(settings.detector.inputSize));
-    const out = await clock.time('detector', () => this.runtime.sessions.detector.run({ [DFINE_IO.input]: tensor }));
+    const out = await clock.time('detector', () =>
+      runSession(this.runtime.sessions.detector, 'person-detector', { [DFINE_IO.input]: tensor }),
+    );
     return clock.time('post', () =>
       decodeDetections(
         out[DFINE_IO.logits]?.data as Float32Array,
@@ -225,7 +247,9 @@ class Pipeline implements FramePipeline {
     for (const { start, count, batch } of planPoseBatches(boxes.length, this.settings.pose)) {
       const crops = regions.slice(start, start + count);
       const tensor = await clock.time('pre', () => frame.poseTensor(crops, batch));
-      const out = await clock.time('pose', () => this.runtime.sessions.pose.run({ [POSE_IO.input]: tensor }));
+      const out = await clock.time('pose', () =>
+        runSession(this.runtime.sessions.pose, 'pose', { [POSE_IO.input]: tensor }),
+      );
       await clock.time('post', () => {
         const keypoints = decodeSimcc(
           out[POSE_IO.simccX]?.data as Float32Array,
