@@ -57,6 +57,11 @@ export interface ExportSheetProps {
   readonly options: RenderOptions;
 }
 
+/** `clip.posetrack.json` -> `clip.partial.posetrack.json`: the engine names the files, the app marks them as incomplete. */
+export function partialFileName(fileName: string): string {
+  return fileName.replace(/(\.(?:posetrack|overlay)\.[a-z0-9]+)$/i, '.partial$1');
+}
+
 function failureMessage(error: unknown): string {
   if (isEngineError(error)) return `${ERROR_DEFAULTS[error.code].title}. ${error.message}`;
   return error instanceof Error ? error.message : 'Export failed.';
@@ -70,6 +75,11 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
   const clip = useSessionStore((s) => s.clip);
   const source = useSessionStore((s) => s.source);
   const final = useSessionStore((s) => s.final);
+  const kept = useSessionStore((s) => s.kept);
+  const processedFrames = useSessionStore((s) => s.processedFrames);
+  const partial = kept && !final;
+  const available = final !== null || (partial && processedFrames > 0);
+  const analysedPercent = clip && clip.frameCount > 0 ? Math.floor((processedFrames / clip.frameCount) * 100) : 0;
   const [busy, setBusy] = useState<Kind | null>(null);
   const [percent, setPercent] = useState(0);
   const [error, setError] = useState<{ kind: Kind; message: string } | null>(null);
@@ -107,7 +117,7 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
       } else {
         const request: ExportRequest = kind === 'mp4' ? { kind, overlay: options, includeAudio } : { kind };
         const result = await engine.exportResult(request);
-        saveBlob(result.blob, result.fileName);
+        saveBlob(result.blob, partial ? partialFileName(result.fileName) : result.fileName);
       }
     } catch (e) {
       setError({ kind, message: failureMessage(e) });
@@ -124,16 +134,27 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
       description="Files are created on this device."
       side={wide ? 'right' : 'bottom'}
     >
+      {partial && available && (
+        <p className="mt-2 text-[13px] text-text-2">
+          Only the first {analysedPercent}% of the clip was analysed. The files are marked partial.
+        </p>
+      )}
       <ul className="mt-2 flex flex-col gap-2">
         {FORMATS.map(({ kind, title, detail, icon: Icon, needsResult }) => {
-          const locked = needsResult && !final;
+          const locked = needsResult && !available;
           return (
             <li key={kind} className="rounded-card border border-border bg-surface-2/40 p-3">
               <div className="flex items-center gap-3">
                 <Icon aria-hidden className="shrink-0 text-text-2" />
                 <div className="min-w-0 flex-1">
                   <p className="font-[550]">{title}</p>
-                  <p className="text-[13px] text-text-2">{locked ? 'Available when the analysis finishes' : detail}</p>
+                  <p className="text-[13px] text-text-2">
+                    {locked
+                      ? 'Available when the analysis finishes'
+                      : needsResult && partial
+                        ? `Partial: ${detail}`
+                        : detail}
+                  </p>
                 </div>
                 <Button
                   size="sm"

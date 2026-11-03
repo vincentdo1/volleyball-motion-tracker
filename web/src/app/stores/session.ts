@@ -16,6 +16,8 @@ export interface SessionState {
   /** Bumped whenever lanes or processed frames changed, so canvases know to repaint. */
   readonly revision: number;
   readonly final: FinalResult | null;
+  /** True once the user kept a cancelled run: what was analysed is the result, and it is partial. */
+  readonly kept: boolean;
   readonly progress: ProgressInfo | null;
   /** Smoothed ETA in seconds (null while unknown). */
   readonly etaS: number | null;
@@ -46,6 +48,7 @@ const EMPTY = {
   lanes: null,
   revision: 0,
   final: null,
+  kept: false,
   progress: null,
   etaS: null,
   warnings: [],
@@ -88,7 +91,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }));
   },
   addWarning: (warning) => set((s) => ({ warnings: [...s.warnings, warning] })),
-  endClip: () => set({ progress: null, etaS: null }),
+  endClip: () => set({ kept: true, progress: null, etaS: null }),
   clear() {
     revoke(get().videoUrl);
     stream = null;

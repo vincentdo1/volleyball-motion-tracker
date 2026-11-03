@@ -1,11 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { StrictMode } from 'react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { saveBlob } from './export/download';
 import { useSessionStore } from './stores/session';
 import { useSettingsStore } from './stores/settings';
 import { useUiStore } from './stores/ui';
 import { useViewStore } from './stores/view';
+
+vi.mock('./export/download', () => ({ saveBlob: vi.fn() }));
 
 const CLIP = '/__fixtures/videos/volleyball_spike_attempt_03.mp4';
 const SLOW = { timeout: 30_000 };
@@ -86,6 +89,47 @@ describe('app flow on the mock engine', () => {
     await waitFor(() => expect(screen.queryByTestId('processing-pill')).toBeNull());
     expect(screen.getByRole('slider', { name: 'Timeline' })).toBeTruthy();
     expect(useSessionStore.getState().final).toBeNull();
+  }, 60_000);
+
+  it('exports the kept partial result, with the files marked as partial', async () => {
+    start('?mock=1');
+    await chooseClip();
+    const pill = await screen.findByTestId('processing-pill', undefined, SLOW);
+    await waitFor(() => expect(useSessionStore.getState().processedFrames).toBeGreaterThan(0));
+    fireEvent.click(within(pill).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Keep \d+% analysed$/ }));
+    await waitFor(() => expect(screen.queryByTestId('processing-pill')).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    expect(await screen.findByText(/Only the first \d+% of the clip was analysed/)).toBeTruthy();
+    const saved = vi.mocked(saveBlob);
+    for (const [name, file] of [
+      ['Tracking data', /\.partial\.posetrack\.json$/],
+      ['Spreadsheet', /\.partial\.posetrack\.csv$/],
+      ['Video with skeletons', /\.partial\.overlay\.mp4$/],
+    ] as const) {
+      const button = screen.getByRole('button', { name: `Export ${name}` }) as HTMLButtonElement;
+      expect(button.disabled).toBe(false);
+      saved.mockClear();
+      fireEvent.click(button);
+      await waitFor(() => expect(saved).toHaveBeenCalledTimes(1), SLOW);
+      expect(saved.mock.calls[0]?.[1]).toMatch(file);
+    }
+    expect(screen.queryByRole('alert')).toBeNull();
+  }, 60_000);
+
+  it('does not mark the files of a finished analysis as partial', async () => {
+    start('?mock=1,fast');
+    await chooseClip();
+    await screen.findByText(/Analysis complete/, undefined, SLOW);
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    expect(screen.queryByText(/marked partial/)).toBeNull();
+    const saved = vi.mocked(saveBlob);
+    saved.mockClear();
+    fireEvent.click(await screen.findByRole('button', { name: 'Export Tracking data' }));
+    await waitFor(() => expect(saved).toHaveBeenCalledTimes(1), SLOW);
+    expect(saved.mock.calls[0]?.[1]).toMatch(/\.posetrack\.json$/);
+    expect(saved.mock.calls[0]?.[1]).not.toContain('partial');
   }, 60_000);
 
   it('shows the empty state when nobody is found', async () => {

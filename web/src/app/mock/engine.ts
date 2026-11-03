@@ -135,6 +135,8 @@ export class MockEngine implements EngineApi {
   private clip: ClipInfo | null = null;
   private scene: SyntheticScene | null = null;
   private final: FinalResult | null = null;
+  /** Frames of the current run already streamed; a cancelled run leaves them as a partial result. */
+  private analysed = 0;
   private runId = 0;
   private paused = false;
   private resumeWaiters: (() => void)[] = [];
@@ -238,6 +240,7 @@ export class MockEngine implements EngineApi {
     this.requireState('Starting', 'opened');
     if (!this.clip || !this.scene) throw engineError('invalid-state', 'Starting is not available without a clip.');
     this.paused = false;
+    this.analysed = 0;
     this.setState('processing');
     const run = ++this.runId;
     void this.process(run);
@@ -288,6 +291,7 @@ export class MockEngine implements EngineApi {
       const to = Math.min(total, from + FRAMES_PER_CHUNK);
       this.emit({ type: 'chunk', seq: seq++, batch: packFrames(this.frameInputs(scene, from, to, cursors)) });
       const framesDone = to;
+      this.analysed = to;
       const elapsedS = Math.max(1e-3, (this.deps.now() - started) / 1000);
       const fps = framesDone / elapsedS;
       const doneUs = (frames.ptsUs[to - 1] as number) + (frames.durationUs[to - 1] as number);
@@ -384,7 +388,9 @@ export class MockEngine implements EngineApi {
   async exportResult(request: ExportRequest): Promise<ExportResult> {
     const error = this.failAt('export');
     if (error) throw error;
-    if (!this.final || !this.clip) throw engineError('invalid-state', 'nothing to export yet');
+    // Like the real engine: a finished run, or the frames analysed before a cancel (state `opened`).
+    const source = this.final ?? (this.current === 'opened' ? this.partialResult() : null);
+    if (!source || !this.clip) throw engineError('invalid-state', 'nothing to export yet');
     const stem = fileStem(this.clip.clip.name);
     const exportId = 1;
     if (request.kind === 'mp4') {
@@ -414,19 +420,60 @@ export class MockEngine implements EngineApi {
             kind: 'json',
             fileName: `${stem}.posetrack.json`,
             mimeType: 'application/json',
-            blob: new Blob([JSON.stringify(encodePoseTrack(this.final))], { type: 'application/json' }),
+            blob: new Blob([JSON.stringify(encodePoseTrack(source))], { type: 'application/json' }),
           }
         : request.kind === 'csv'
           ? {
               exportId,
               kind: 'csv',
-              fileName: `${stem}.csv`,
+              fileName: `${stem}.posetrack.csv`,
               mimeType: 'text/csv',
-              blob: new Blob([resultToCsv(this.final)], { type: 'text/csv' }),
+              blob: new Blob([resultToCsv(source)], { type: 'text/csv' }),
             }
-          : { exportId, kind: 'mp4', fileName: `${stem}-overlay.mp4`, mimeType: 'video/mp4', blob: placeholderMp4() };
+          : { exportId, kind: 'mp4', fileName: `${stem}.overlay.mp4`, mimeType: 'video/mp4', blob: placeholderMp4() };
     this.emit({ type: 'export-done', ...result });
     return result;
+  }
+
+  /** The result of the frames analysed so far, or null when there are none. */
+  private partialResult(): FinalResult | null {
+    const { scene, clip, analysed } = this;
+    if (!scene || !clip || analysed === 0) return null;
+    const full = this.buildFinal(scene, clip.clip, this.deps.now());
+    const { frames, ball } = full;
+    const untilUs = (frames.ptsUs[analysed - 1] as number) + 1;
+    return {
+      header: full.header,
+      frames: {
+        ptsUs: frames.ptsUs.slice(0, analysed),
+        durationUs: frames.durationUs.slice(0, analysed),
+        flags: frames.flags.slice(0, analysed),
+      },
+      tracks: full.tracks.flatMap((track) => {
+        const n = track.ptsUs.findIndex((pts) => pts >= untilUs);
+        const count = n < 0 ? track.ptsUs.length : n;
+        if (count === 0) return [];
+        return [
+          {
+            ...track,
+            ptsUs: track.ptsUs.slice(0, count),
+            box: track.box.slice(0, count * 4),
+            boxScore: track.boxScore.slice(0, count),
+            kp: track.kp.slice(0, count * PERSON_KP_VALUES),
+            kpFlags: track.kpFlags.slice(0, count * 26),
+            sampleFlags: track.sampleFlags.slice(0, count),
+          },
+        ];
+      }),
+      ball: ball && {
+        ptsUs: ball.ptsUs.slice(0, analysed),
+        xy: ball.xy.slice(0, analysed * 2),
+        radius: ball.radius.slice(0, analysed),
+        confidence: ball.confidence.slice(0, analysed),
+        visibility: ball.visibility.slice(0, analysed),
+        source: ball.source.slice(0, analysed),
+      },
+    };
   }
 
   async dispose(): Promise<void> {
