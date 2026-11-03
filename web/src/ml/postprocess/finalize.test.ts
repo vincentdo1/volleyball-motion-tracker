@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEVICE_TIERS } from '@/contracts/capabilities';
 import { HALPE26_NUM_KEYPOINTS } from '@/contracts/halpe26';
 import type { FinalizeInput } from '@/contracts/pipeline';
-import { BallSource, BallVisibility, type ClipMetadata, KeypointFlag } from '@/contracts/posetrack';
+import { BallSource, BallVisibility, type ClipMetadata, KeypointFlag, SampleFlag } from '@/contracts/posetrack';
 import { type Path, sceneBatch } from '../__fixtures__/scene';
 import { defaultSettings } from '../settings';
 import { finalize } from './finalize';
@@ -82,6 +82,18 @@ describe('finalize', () => {
       }
     }
     expect(Array.from(track.ptsUs).every((t, i, all) => i === 0 || t > (all[i - 1] as number))).toBe(true);
+  });
+
+  it('carries measured keypoints from the first sample of every track, including a track that starts at t=0', () => {
+    const out = finalize(inputFor(30, 3, [1, 2], [walk(300, 100, 400), (t) => (t >= 1 ? walk(900, 0, 500)(t) : null)]));
+    expect(out.tracks.length).toBe(2);
+    for (const track of out.tracks) {
+      for (let k = 0; k < HALPE26_NUM_KEYPOINTS; k++) {
+        expect(Number.isFinite(track.kp[k * 3 + 2])).toBe(true);
+        expect((track.kpFlags[k] as number) & (KeypointFlag.MISSING | KeypointFlag.INTERPOLATED)).toBe(0);
+      }
+      expect((track.sampleFlags[0] as number) & SampleFlag.POSE_MISSING).toBe(0);
+    }
   });
 
   it('builds the ball column for every processed frame and null without ball results', () => {
