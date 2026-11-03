@@ -39,6 +39,24 @@ export default mergeConfig(
           test: {
             name: 'browser',
             include: ['src/**/*.browser.test.{ts,tsx}'],
+            exclude: ['src/**/*.perf.browser.test.{ts,tsx}', '**/node_modules/**'],
+            testTimeout: 120_000,
+            browser: {
+              enabled: true,
+              headless: true,
+              provider: playwright({ launchOptions: { executablePath: chromeForTesting } }),
+              instances: [{ browser: 'chromium' }],
+            },
+          },
+        },
+        {
+          extends: true,
+          // Timing budgets only mean something on an otherwise idle browser, so perf files run alone, one at a time.
+          server: { port: Number(process.env.VITEST_BROWSER_PORT ?? port + 1000), strictPort: false },
+          test: {
+            name: 'perf',
+            include: ['src/**/*.perf.browser.test.{ts,tsx}'],
+            fileParallelism: false,
             testTimeout: 120_000,
             browser: {
               enabled: true,

@@ -18,6 +18,7 @@
     "test": "vitest run --project unit --project dom",
     "test:watch": "vitest --project unit --project dom",
     "test:browser": "vitest run --project browser",
+    "test:perf": "vitest run --project perf",
     "test:harness": "vitest run --project harness",
     "test:e2e": "playwright test",
     "fetch-models": "node scripts/fetch-models.mjs",
