@@ -214,6 +214,7 @@ describe('parseMockParam', () => {
       empty: true,
       errorCode: 'corrupt-file',
     });
+    expect(parseMockParam('?mock=fast,crowd')?.crowd).toBe(true);
     expect(parseMockParam('?mock=error:not-a-code')?.errorCode).toBeNull();
   });
 });

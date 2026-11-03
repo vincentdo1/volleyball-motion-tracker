@@ -1,12 +1,13 @@
 import { Eye, EyeOff } from 'lucide-react';
 import { type KeyboardEvent, type PointerEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { IDENTITY_PALETTE } from '@/contracts/renderer';
+import { slotCss } from '@/render/palette';
 import { cn } from '@/ui/cn';
 import { formatClock } from '../format';
 import type { PlayerController } from '../player/controller';
 import { usePlayerSnapshot } from '../player/hooks';
 import { BallLane, type LaneData, LaneLevel } from '../results/lanes';
 import { isPositionOnly, type TrackInfo } from '../results/tracks';
+import { IdentityDot } from './IdentityDot';
 
 const LANE_H = 28;
 const RULER_H = 22;
@@ -116,7 +117,7 @@ export function Timeline(props: TimelineProps) {
       ctx.globalAlpha = 1;
     };
     tracks.forEach((t, row) => {
-      paintLane(row, lanes?.players.get(t.id), IDENTITY_PALETTE[t.colorSlot % IDENTITY_PALETTE.length] ?? '#fff');
+      paintLane(row, lanes?.players.get(t.id), slotCss(t.colorSlot));
     });
     paintLane(tracks.length, lanes?.ball, '#8f7bff', true);
   }, [width, height, frames, durationS, lanes, revision, tracks, processedFrames]);
@@ -171,11 +172,7 @@ export function Timeline(props: TimelineProps) {
                   focusTrackId === t.id ? 'bg-surface-2 text-text' : 'text-text-2 hover:text-text',
                 )}
               >
-                <span
-                  aria-hidden
-                  className="size-2.5 shrink-0 rounded-pill"
-                  style={{ background: IDENTITY_PALETTE[t.colorSlot % IDENTITY_PALETTE.length] }}
-                />
+                <IdentityDot slot={t.colorSlot} className="size-2.5" />
                 <span className="truncate">{t.label}</span>
                 {isPositionOnly(t) && (
                   <span className="truncate font-normal text-[11px] text-text-2">position only</span>

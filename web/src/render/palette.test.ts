@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assignColorSlots, isReusedSlot, PALETTE_SIZE, slotColor } from './palette';
+import { assignColorSlots, colorVariant, isReusedSlot, PALETTE_SIZE, slotColor, VARIANT_COUNT } from './palette';
 
 const track = (id: number, first: number, last: number) => ({ id, firstPtsUs: first, lastPtsUs: last });
 
@@ -25,5 +25,33 @@ describe('assignColorSlots', () => {
     expect(new Set(values.slice(0, PALETTE_SIZE)).size).toBe(PALETTE_SIZE);
     expect(values.slice(PALETTE_SIZE).every(isReusedSlot)).toBe(true);
     expect(slotColor(values[8] as number)).toEqual(slotColor((values[8] as number) % PALETTE_SIZE));
+  });
+});
+
+/** What a viewer sees of a slot: its colour and whether it carries the second ring. */
+const look = (slot: number) => `${slotColor(slot).join(',')}${isReusedSlot(slot) ? ' ring' : ''}`;
+
+describe('repeated hues', () => {
+  it('tells apart every player of a crowd with a tint or shade, not only the ring', () => {
+    const looks = new Set<string>();
+    for (let slot = 0; slot < PALETTE_SIZE * VARIANT_COUNT; slot++) looks.add(look(slot));
+    expect(looks.size).toBe(PALETTE_SIZE * VARIANT_COUNT);
+    for (let hue = 0; hue < PALETTE_SIZE; hue++) {
+      const [plain, ring, light, dark] = [0, 1, 2, 3].map((v) => slotColor(hue + v * PALETTE_SIZE));
+      expect(ring).toEqual(plain);
+      for (let c = 0; c < 3; c++) {
+        expect(light?.[c] as number).toBeGreaterThanOrEqual(plain?.[c] as number);
+        expect(dark?.[c] as number).toBeLessThanOrEqual(plain?.[c] as number);
+      }
+    }
+    expect(slotColor(PALETTE_SIZE * VARIANT_COUNT)).toEqual(slotColor(0));
+    expect(colorVariant(61)).toBe(3);
+  });
+
+  it('assigns the next variant of the least-used hue when more than 16 tracks overlap', () => {
+    const slots = [...assignColorSlots(Array.from({ length: 30 }, (_, i) => track(i + 1, 0, 1000))).values()];
+    const looks = new Set(slots.map(look));
+    expect(looks.size).toBe(30);
+    expect(Math.max(...slots.map(colorVariant))).toBe(3);
   });
 });

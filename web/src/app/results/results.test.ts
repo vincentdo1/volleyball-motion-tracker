@@ -59,6 +59,14 @@ describe('StreamingResults', () => {
     expect(stream.lanes.ball[3]).toBe(BallLane.Visible);
   });
 
+  it('reports progress from the furthest frame, so a run resumed partway shows its true position', () => {
+    const stream = new StreamingResults(scene.frames);
+    stream.append(batchOf(12, 16));
+    expect(stream.processedFrames).toBe(16);
+    stream.append(batchOf(16, 20));
+    expect(stream.processedFrames).toBe(20);
+  });
+
   it('draws the same players as the final result for a processed frame', () => {
     const stream = new StreamingResults(scene.frames);
     stream.append(batchOf(0, 24));

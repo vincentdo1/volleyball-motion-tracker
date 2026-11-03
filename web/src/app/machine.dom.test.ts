@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createActor, waitFor } from 'xstate';
 import type { ClipMetadata } from '@/contracts/posetrack';
+import type { OpenedInfo, ReadyInfo, ResumeInfo } from '@/contracts/protocol';
 import { syntheticFrameTable } from '@/render/synthetic';
 import { bridgeEngine } from './bridge';
 import { appMachine } from './machine';
@@ -39,8 +40,18 @@ const clip = (): ClipInfo => ({
 const FAST: MockConfig = { ...DEFAULT_MOCK_CONFIG, chunkDelayMs: 0 };
 const file = () => new File(['x'], 'a.mp4', { type: 'video/mp4' });
 
-function start(config: MockConfig = FAST) {
-  const engine = new MockEngine(config, { readClip: async () => clip() });
+/** The real engine needs time to stop a run; the state only changes once it has. */
+class SlowCancelEngine extends MockEngine {
+  override async cancel(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return super.cancel();
+  }
+}
+
+function start(
+  config: MockConfig = FAST,
+  engine: MockEngine = new MockEngine(config, { readClip: async () => clip() }),
+) {
   const actor = createActor(appMachine, { input: { engine, initOptions: () => ({}) } });
   const stop = bridgeEngine(engine, actor, () => 0);
   actor.start();
@@ -137,5 +148,109 @@ describe('app machine with the mock engine', () => {
     const { actor } = start({ ...FAST, errorCode: 'unsupported-browser' });
     await waitFor(actor, (s) => s.matches('unsupported'));
     expect(actor.getSnapshot().context.error?.action).toBe('change-browser');
+  });
+
+  it('initialises the engine once when the machine starts twice (React strict mode)', async () => {
+    const engine = new MockEngine({ ...FAST, chunkDelayMs: 5 }, { readClip: async () => clip() });
+    const init = vi.spyOn(engine, 'init');
+    const first = start(FAST, engine);
+    const second = start(FAST, engine);
+    await waitFor(first.actor, (s) => s.matches('landing'));
+    await waitFor(second.actor, (s) => s.matches('landing'));
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not open the clip until the engine is ready, even when the first init was lost', async () => {
+    const engine = new MockEngine(FAST, { readClip: async () => clip() });
+    let info: ReadyInfo | null = null;
+    engine.on('ready', (e) => {
+      info = e;
+    });
+    const { actor } = start(FAST, engine);
+    await waitFor(actor, (s) => s.matches('landing'));
+    // the engine lost its worker after it was ready: it reports `failed` and has to be initialised again
+    const lost = vi.spyOn(engine, 'state', 'get').mockReturnValue('failed');
+    const init = vi.spyOn(engine, 'init').mockImplementation(async () => {
+      lost.mockRestore();
+      return info as unknown as ReadyInfo;
+    });
+    actor.send({ type: 'PICK', file: file() });
+    await waitFor(actor, (s) => s.matches('results') || s.matches('error'));
+    expect(actor.getSnapshot().matches('results')).toBe(true);
+    expect(init).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a discarded run to stop before opening the next clip', async () => {
+    const engine = new SlowCancelEngine({ ...FAST, chunkDelayMs: 20 }, { readClip: async () => clip() });
+    const { actor } = start(FAST, engine);
+    await waitFor(actor, (s) => s.matches('landing'));
+    actor.send({ type: 'PICK', file: file() });
+    await until(() => useSessionStore.getState().processedFrames >= 8);
+    actor.send({ type: 'CANCEL', keep: false });
+    expect(actor.getSnapshot().matches('landing')).toBe(true);
+    actor.send({ type: 'PICK', file: file() });
+    const snapshot = await waitFor(actor, (s) => s.matches('results') || s.matches('error'), { timeout: 5000 });
+    expect(snapshot.value).toBe('results');
+    expect(useSessionStore.getState().final?.tracks.length).toBe(5);
+  });
+
+  it('cancels a run that was only just started once the engine has created it', async () => {
+    const engine = new SlowCancelEngine({ ...FAST, chunkDelayMs: 20 }, { readClip: async () => clip() });
+    const { actor } = start(FAST, engine);
+    await waitFor(actor, (s) => s.matches('landing'));
+    actor.send({ type: 'PICK', file: file() });
+    await waitFor(actor, (s) => s.matches('analyzing'));
+    actor.send({ type: 'CANCEL', keep: false });
+    actor.send({ type: 'PICK', file: file() });
+    const snapshot = await waitFor(actor, (s) => s.matches('results') || s.matches('error'), { timeout: 5000 });
+    expect(snapshot.value).toBe('results');
+  });
+
+  describe('saved runs', () => {
+    const saved = (settingsMatch = true): ResumeInfo => ({ doneUs: 800_000, chunks: 2, settingsMatch });
+    function withSavedRun(resume: ResumeInfo) {
+      const engine = new MockEngine(FAST, { readClip: async () => clip() });
+      const open = engine.open.bind(engine);
+      engine.open = async (f: File): Promise<OpenedInfo> => ({ ...(await open(f)), resume });
+      const startSpy = vi.spyOn(engine, 'start');
+      return { engine, startSpy };
+    }
+
+    it('offers to continue and starts the run with resume', async () => {
+      const { engine, startSpy } = withSavedRun(saved());
+      const { actor } = start(FAST, engine);
+      await waitFor(actor, (s) => s.matches('landing'));
+      actor.send({ type: 'PICK', file: file() });
+      const offered = await waitFor(actor, (s) => s.matches('offering'));
+      expect(offered.context.resume?.doneUs).toBe(800_000);
+      actor.send({ type: 'CONTINUE' });
+      await waitFor(actor, (s) => s.matches('results'));
+      expect(startSpy).toHaveBeenCalledWith({ resume: true });
+    });
+
+    it('starts over on request, and leaves the saved run alone when the offer is dismissed', async () => {
+      const { engine, startSpy } = withSavedRun(saved());
+      const { actor } = start(FAST, engine);
+      await waitFor(actor, (s) => s.matches('landing'));
+      actor.send({ type: 'PICK', file: file() });
+      await waitFor(actor, (s) => s.matches('offering'));
+      actor.send({ type: 'NEW_CLIP' });
+      expect(actor.getSnapshot().matches('landing')).toBe(true);
+      expect(startSpy).not.toHaveBeenCalled();
+      actor.send({ type: 'PICK', file: file() });
+      await waitFor(actor, (s) => s.matches('offering'));
+      actor.send({ type: 'START_OVER' });
+      await waitFor(actor, (s) => s.matches('results'));
+      expect(startSpy).toHaveBeenCalledWith({ resume: false });
+    });
+
+    it('does not offer a run saved with other settings', async () => {
+      const { engine, startSpy } = withSavedRun(saved(false));
+      const { actor } = start(FAST, engine);
+      await waitFor(actor, (s) => s.matches('landing'));
+      actor.send({ type: 'PICK', file: file() });
+      await waitFor(actor, (s) => s.matches('results'));
+      expect(startSpy).toHaveBeenCalledWith({ resume: false });
+    });
   });
 });

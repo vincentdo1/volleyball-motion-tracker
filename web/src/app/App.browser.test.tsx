@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { App } from './App';
 import { useSessionStore } from './stores/session';
@@ -60,6 +61,18 @@ describe('app flow on the mock engine', () => {
     expect((exportJson as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(exportJson);
     await waitFor(() => expect(exportJson.textContent).toBe('Export'));
+    expect(screen.queryByRole('alert')).toBeNull();
+  }, 60_000);
+
+  it('starts once under React strict mode, which runs effects twice in development', async () => {
+    window.history.replaceState(null, '', '/?mock=1,fast');
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await chooseClip();
+    await screen.findByText(/Analysis complete/, undefined, SLOW);
     expect(screen.queryByRole('alert')).toBeNull();
   }, 60_000);
 

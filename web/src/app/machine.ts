@@ -1,7 +1,8 @@
 import { assign, fromPromise, setup } from 'xstate';
 import { type DeviceTierId, TIER_STEP_DOWN } from '@/contracts/capabilities';
 import { type EngineError, engineError, isEngineError } from '@/contracts/errors';
-import type { EngineApi, InitOptions } from '@/contracts/protocol';
+import type { EngineApi, InitOptions, OpenedInfo, ResumeInfo } from '@/contracts/protocol';
+import { ensureReady, openClip, startRun, stopRun } from './engine-lifecycle';
 import { useSessionStore } from './stores/session';
 import { useViewStore } from './stores/view';
 
@@ -18,6 +19,10 @@ export interface AppContext {
   readonly engine: EngineApi;
   readonly initOptions: () => InitOptions;
   readonly file: ClipInput | null;
+  /** Saved results of an earlier run of the same clip that this run can continue from. */
+  readonly resume: ResumeInfo | null;
+  /** Whether the analysis continues from the saved results (true) or starts over. */
+  readonly continueRun: boolean;
   readonly error: EngineError | null;
   /** Where "Try again" goes back to. */
   readonly retry: 'boot' | 'open' | 'analyze';
@@ -29,10 +34,22 @@ export type AppEvent =
   | { type: 'ENGINE_DONE' }
   | { type: 'ENGINE_ERROR'; error: EngineError }
   | { type: 'CANCEL'; keep: boolean }
+  | { type: 'CONTINUE' }
+  | { type: 'START_OVER' }
   | { type: 'RETRY' }
   | { type: 'FALLBACK_TIER' }
   | { type: 'NEW_CLIP' }
   | { type: 'DISMISS' };
+
+/** An earlier run is worth offering when it was made with the current settings. */
+export function hasSavedRun({ resume }: Pick<OpenedInfo, 'resume'>): boolean {
+  return resume !== null && resume.settingsMatch && resume.chunks > 0;
+}
+
+/** What the engine is initialised with, including a tier the user stepped down to. */
+function engineOptions(context: AppContext): InitOptions {
+  return { ...context.initOptions(), ...(context.tierOverride ? { tierOverride: context.tierOverride } : {}) };
+}
 
 function asEngineError(value: unknown): EngineError {
   if (isEngineError(value)) return value;
@@ -51,15 +68,17 @@ export const appMachine = setup({
   },
   actors: {
     boot: fromPromise(async ({ input }: { input: { engine: EngineApi; options: InitOptions } }) =>
-      input.engine.init(input.options),
+      ensureReady(input.engine, input.options),
     ),
-    open: fromPromise(async ({ input }: { input: { engine: EngineApi; file: ClipInput } }) => {
-      const opened = await input.engine.open(input.file);
+    open: fromPromise(async ({ input }: { input: { engine: EngineApi; file: ClipInput; options: InitOptions } }) => {
+      const opened = await openClip(input.engine, input.file, input.options);
       useViewStore.getState().reset();
       useSessionStore.getState().beginClip(input.file, opened.clip, opened.frameTable);
       return opened;
     }),
-    analyze: fromPromise(async ({ input }: { input: { engine: EngineApi } }) => input.engine.start()),
+    analyze: fromPromise(async ({ input }: { input: { engine: EngineApi; resume: boolean } }) =>
+      startRun(input.engine, { resume: input.resume }),
+    ),
   },
   actions: {
     fail: assign(({ event }) => ({ error: asEngineError((event as { error?: unknown }).error) })),
@@ -70,12 +89,14 @@ export const appMachine = setup({
       useViewStore.getState().reset();
     },
     keepPartial: ({ context }) => {
-      void context.engine.cancel();
+      void stopRun(context.engine);
       useSessionStore.getState().endClip();
     },
     discard: ({ context }) => {
-      void context.engine.cancel();
+      void stopRun(context.engine);
     },
+    continueRun: assign({ continueRun: true }),
+    startOver: assign({ continueRun: false }),
     stepDownTier: assign(({ context }) => ({
       tierOverride: TIER_STEP_DOWN[context.tierOverride ?? 'webgpu-default'] ?? 'wasm-st',
     })),
@@ -87,6 +108,8 @@ export const appMachine = setup({
     engine: input.engine,
     initOptions: input.initOptions,
     file: null,
+    resume: null,
+    continueRun: false,
     error: null,
     retry: 'boot',
     tierOverride: null,
@@ -95,13 +118,7 @@ export const appMachine = setup({
     booting: {
       invoke: {
         src: 'boot',
-        input: ({ context }) => ({
-          engine: context.engine,
-          options: {
-            ...context.initOptions(),
-            ...(context.tierOverride ? { tierOverride: context.tierOverride } : {}),
-          },
-        }),
+        input: ({ context }) => ({ engine: context.engine, options: engineOptions(context) }),
         onDone: [{ guard: ({ context }) => context.file !== null, target: 'probing' }, { target: 'landing' }],
         onError: [
           {
@@ -121,15 +138,34 @@ export const appMachine = setup({
     probing: {
       invoke: {
         src: 'open',
-        input: ({ context }) => ({ engine: context.engine, file: context.file as ClipInput }),
-        onDone: 'analyzing',
+        input: ({ context }) => ({
+          engine: context.engine,
+          file: context.file as ClipInput,
+          options: engineOptions(context),
+        }),
+        onDone: [
+          {
+            guard: ({ event }) => hasSavedRun(event.output),
+            target: 'offering',
+            actions: assign({ resume: ({ event }) => event.output.resume }),
+          },
+          { target: 'analyzing', actions: 'startOver' },
+        ],
         onError: { target: 'error', actions: ['fail', assign({ retry: 'open' })] },
+      },
+    },
+    // an earlier run of this clip was saved: continue it or start over
+    offering: {
+      on: {
+        CONTINUE: { target: 'analyzing', actions: 'continueRun' },
+        START_OVER: { target: 'analyzing', actions: 'startOver' },
+        NEW_CLIP: { target: 'landing', actions: 'forget' },
       },
     },
     analyzing: {
       invoke: {
         src: 'analyze',
-        input: ({ context }) => ({ engine: context.engine }),
+        input: ({ context }) => ({ engine: context.engine, resume: context.continueRun }),
         onError: { target: 'error', actions: ['fail', assign({ retry: 'analyze' })] },
       },
       on: {

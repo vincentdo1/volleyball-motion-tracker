@@ -36,6 +36,7 @@ import { placeholderMp4, resultToCsv } from './export';
 
 const FRAMES_PER_CHUNK = 8;
 const MOCK_PLAYERS = 5;
+const MOCK_CROWD = 60;
 const TIER = DEVICE_TIERS['webgpu-default'];
 const lock = parseModelsLock(lockJson);
 
@@ -180,7 +181,15 @@ export class MockEngine implements EngineApi {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  /** The real engine accepts each call only in some states; the mock keeps to the same rules so races show up in tests. */
+  private requireState(what: string, ...allowed: EngineState[]): void {
+    if (!allowed.includes(this.current)) {
+      throw engineError('invalid-state', `${what} is not available while the engine is ${this.current}.`);
+    }
+  }
+
   async init(_options: InitOptions = {}): Promise<ReadyInfo> {
+    this.requireState('Initialising', 'idle', 'failed');
     this.setState('initializing');
     await this.delay(this.config.chunkDelayMs * 2);
     const error = this.failAt('init');
@@ -199,6 +208,7 @@ export class MockEngine implements EngineApi {
   }
 
   async open(file: File): Promise<OpenedInfo> {
+    this.requireState('Opening a file', 'ready', 'opened', 'done', 'failed');
     this.setState('opening');
     await this.delay(this.config.chunkDelayMs);
     const error = this.failAt('open');
@@ -212,7 +222,7 @@ export class MockEngine implements EngineApi {
     this.scene = syntheticScene({
       width: clip.displayWidth,
       height: clip.displayHeight,
-      players: this.config.empty ? 0 : MOCK_PLAYERS,
+      players: this.config.empty ? 0 : this.config.crowd ? MOCK_CROWD : MOCK_PLAYERS,
       frames: frameTable,
       seed: seedOf(clip.fingerprint),
       variety: true,
@@ -225,9 +235,8 @@ export class MockEngine implements EngineApi {
   }
 
   async start(_options: StartOptions = {}): Promise<void> {
-    if (this.current !== 'opened' || !this.clip || !this.scene) {
-      throw engineError('invalid-state', `cannot start while ${this.current}`);
-    }
+    this.requireState('Starting', 'opened');
+    if (!this.clip || !this.scene) throw engineError('invalid-state', 'Starting is not available without a clip.');
     this.paused = false;
     this.setState('processing');
     const run = ++this.runId;
@@ -248,7 +257,7 @@ export class MockEngine implements EngineApi {
   }
 
   async cancel(): Promise<void> {
-    if (this.current !== 'processing' && this.current !== 'paused') return;
+    this.requireState('Cancelling', 'processing', 'paused');
     this.runId++;
     this.paused = false;
     for (const wake of this.resumeWaiters.splice(0)) wake();

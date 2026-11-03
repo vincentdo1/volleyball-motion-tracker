@@ -40,6 +40,7 @@ export class StreamingResults implements FrameSource {
     };
   }
 
+  /** How far the engine has got: one past the last frame received (a resumed run starts partway through the clip). */
   get processedFrames(): number {
     return this.processed;
   }
@@ -68,7 +69,7 @@ export class StreamingResults implements FrameSource {
               ),
             ],
       );
-      if (!this.entries[i]) this.processed++;
+      this.processed = Math.max(this.processed, i + 1);
       this.entries[i] = { players };
       this.lastProcessedPts = Math.max(this.lastProcessedPts, pts);
       for (const p of players) {

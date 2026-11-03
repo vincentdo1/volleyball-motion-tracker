@@ -108,7 +108,7 @@ export function Results({ engine, analyzing, onCancel, onNewClip }: ResultsProps
 
       <div className="grid min-h-0 flex-1 lg:grid-cols-[1fr_20rem]">
         <section className="flex min-h-0 min-w-0 flex-col" aria-label="Player">
-          <div ref={stageBox} className="relative min-h-0 flex-1 bg-stage">
+          <div ref={stageBox} className="relative min-h-[36dvh] flex-1 bg-stage">
             <VideoStage
               src={videoUrl}
               frames={stageFrames}
@@ -134,7 +134,10 @@ export function Results({ engine, analyzing, onCancel, onNewClip }: ResultsProps
             frameCount={stageFrames.ptsUs.length}
             onFullscreen={() => void toggleFullscreen(stageBox.current)}
           />
-          <div className="border-border border-t px-3 pb-3 sm:px-4">
+          <div
+            data-testid="timeline-scroller"
+            className="max-h-[clamp(7rem,24dvh,16rem)] shrink-0 overflow-y-auto overscroll-contain border-border border-t px-3 pb-3 sm:px-4"
+          >
             <Timeline
               controller={controller}
               ptsUs={stageFrames.ptsUs}

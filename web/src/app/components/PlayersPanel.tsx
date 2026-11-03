@@ -1,9 +1,9 @@
 import { Eye, EyeOff, Focus } from 'lucide-react';
-import { IDENTITY_PALETTE } from '@/contracts/renderer';
 import { cn } from '@/ui/cn';
 import { IconButton } from '@/ui/icon-button';
 import { isPositionOnly, type TrackInfo } from '../results/tracks';
 import { useViewStore } from '../stores/view';
+import { IdentityDot } from './IdentityDot';
 
 export interface PlayersPanelProps {
   readonly tracks: readonly TrackInfo[];
@@ -22,7 +22,6 @@ export function PlayersPanel({ tracks, live }: PlayersPanelProps) {
       {tracks.map((track, i) => {
         const hidden = hiddenTrackIds.includes(track.id);
         const focused = focusTrackId === track.id;
-        const color = IDENTITY_PALETTE[track.colorSlot % IDENTITY_PALETTE.length] ?? '#fff';
         return (
           <li
             key={track.id}
@@ -38,7 +37,7 @@ export function PlayersPanel({ tracks, live }: PlayersPanelProps) {
               onClick={() => setFocus(track.id)}
               className="flex min-w-0 flex-1 items-center gap-3 rounded-input px-2 py-2 text-left [@media(pointer:coarse)]:min-h-11"
             >
-              <span aria-hidden className="size-3 shrink-0 rounded-pill" style={{ background: color }} />
+              <IdentityDot slot={track.colorSlot} className="size-3" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-[550]">
                   {track.label}

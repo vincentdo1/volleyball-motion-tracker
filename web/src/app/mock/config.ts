@@ -6,11 +6,13 @@ export interface MockConfig {
   readonly errorCode: EngineErrorCode | null;
   /** The clip contains no people (empty state). */
   readonly empty: boolean;
+  /** Many people in the clip (a crowd: dozens of tracks), to exercise long player lists. */
+  readonly crowd: boolean;
   /** Delay between processing chunks, ms. `fast` is for tests. */
   readonly chunkDelayMs: number;
 }
 
-export const DEFAULT_MOCK_CONFIG: MockConfig = { errorCode: null, empty: false, chunkDelayMs: 90 };
+export const DEFAULT_MOCK_CONFIG: MockConfig = { errorCode: null, empty: false, crowd: false, chunkDelayMs: 90 };
 const FAST_CHUNK_DELAY_MS = 2;
 
 function isErrorCode(value: string): value is EngineErrorCode {
@@ -25,6 +27,7 @@ export function parseMockParam(search: string): MockConfig | null {
   for (const part of raw.split(',')) {
     if (part === 'fast') config = { ...config, chunkDelayMs: FAST_CHUNK_DELAY_MS };
     else if (part === 'empty') config = { ...config, empty: true };
+    else if (part === 'crowd') config = { ...config, crowd: true };
     else if (part.startsWith('error:')) {
       const code = part.slice('error:'.length);
       if (isErrorCode(code)) config = { ...config, errorCode: code };

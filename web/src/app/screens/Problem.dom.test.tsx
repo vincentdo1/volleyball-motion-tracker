@@ -35,4 +35,18 @@ describe('Problem', () => {
     expect(screen.getByText(/recent version of Chrome or Edge/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /try|start over|reload/i })).toBeNull();
   });
+
+  it('keeps runtime output out of the explanation and under Details', () => {
+    render(
+      <Problem
+        error={engineError('inference-failed', "failed to call OrtRun(): Shader 'Pad' parsing error")}
+        onRetry={vi.fn()}
+        onFallbackTier={vi.fn()}
+        onNewClip={vi.fn()}
+      />,
+    );
+    const details = screen.getByText(/OrtRun/);
+    expect(details.closest('details')).not.toBeNull();
+    expect(screen.getByRole('alert').textContent).not.toMatch(/OrtRun/);
+  });
 });

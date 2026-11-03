@@ -1,5 +1,6 @@
 import { TriangleAlert } from 'lucide-react';
 import { formatBytes, formatDuration } from '../format';
+import { noticeFor } from '../notices';
 import { useSessionStore } from '../stores/session';
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -27,7 +28,7 @@ export function DataPanel() {
               className="flex gap-2 rounded-input border border-border bg-surface-2/50 p-3 text-[13px]"
             >
               <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-id-5" />
-              {warning.message}
+              {noticeFor(warning)?.description ?? warning.message}
             </li>
           ))}
         </ul>

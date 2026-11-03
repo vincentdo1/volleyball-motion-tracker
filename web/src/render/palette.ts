@@ -1,15 +1,43 @@
 import { IDENTITY_PALETTE } from '@/contracts/renderer';
-import { hexToRgb, oklabDistance, type Rgb } from './color';
+import { hexToRgb, mix, oklabDistance, type Rgb, rgba, WHITE } from './color';
 
 const PALETTE_RGB: readonly Rgb[] = IDENTITY_PALETTE.map(hexToRgb);
+const BLACK: Rgb = [0, 0, 0];
 
 export const PALETTE_SIZE = PALETTE_RGB.length;
 
-/** Identity colour of a slot. Slots >= 8 reuse `slot % 8`; `isReusedSlot` tells the renderer to add a second cue. */
-export function slotColor(slot: number): Rgb {
-  return PALETTE_RGB[((slot % PALETTE_SIZE) + PALETTE_SIZE) % PALETTE_SIZE] as Rgb;
+/**
+ * Looks per hue: slot / 8 picks the variant. 0 is the plain hue, 1 adds a second ring, 2 adds the ring and a lighter
+ * tint, 3 the ring and a darker shade. 8 hues x 4 variants = 32 looks before one repeats exactly.
+ */
+export const VARIANT_COUNT = 4;
+const LIGHTER_TINT = 0.4;
+const DARKER_SHADE = 0.3;
+
+/** Which variant of its hue a slot draws with (0 = plain). */
+export function colorVariant(slot: number): number {
+  return Math.floor(Math.max(0, slot) / PALETTE_SIZE) % VARIANT_COUNT;
 }
 
+/** Identity colour of a slot: the hue is `slot % 8`, repeats are told apart by `colorVariant` (tint, shade) and a ring. */
+export function slotColor(slot: number): Rgb {
+  const hue = PALETTE_RGB[((slot % PALETTE_SIZE) + PALETTE_SIZE) % PALETTE_SIZE] as Rgb;
+  switch (colorVariant(slot)) {
+    case 2:
+      return mix(hue, WHITE, LIGHTER_TINT);
+    case 3:
+      return mix(hue, BLACK, DARKER_SHADE);
+    default:
+      return hue;
+  }
+}
+
+/** The slot colour as a CSS string, for the DOM (player list, lanes). */
+export function slotCss(slot: number): string {
+  return rgba(slotColor(slot), 1);
+}
+
+/** Reused hues carry a second cue (a ring), so colour is never the only way to tell two players apart. */
 export function isReusedSlot(slot: number): boolean {
   return slot >= PALETTE_SIZE;
 }
@@ -23,8 +51,8 @@ export interface SlotTrack {
 /**
  * Deterministic slot assignment (05 §2.4). Tracks are processed in birth order (ties by id). Each takes the free slot
  * that maximises the minimum OKLab distance to the slots of tracks it overlaps in time; ties go to the lowest slot.
- * When more than 8 tracks overlap, the least-used slot among the overlapping tracks is reused (lowest index on ties),
- * so reused hues stay as far apart in time and palette position as possible. A slot never changes once assigned.
+ * When more than 8 tracks overlap, the least-used hue among the overlapping tracks is reused as its next variant
+ * (lowest index on ties), so reused hues stay as far apart in time and palette position as possible. A slot never changes once assigned.
  */
 export function assignColorSlots(tracks: readonly SlotTrack[]): Map<number, number> {
   const ordered = [...tracks].sort((a, b) => a.firstPtsUs - b.firstPtsUs || a.id - b.id);
@@ -51,12 +79,12 @@ export function assignColorSlots(tracks: readonly SlotTrack[]): Map<number, numb
       }
     }
     if (bestScore === Number.NEGATIVE_INFINITY) {
-      // every hue is taken by an overlapping track: reuse the least-used one and flag it as reused (slot + 8)
+      // every hue is taken by an overlapping track: reuse the least-used one as the next variant of that hue
       let least = 0;
       for (let slot = 1; slot < PALETTE_SIZE; slot++) {
         if ((used.get(slot) ?? 0) < (used.get(least) ?? 0)) least = slot;
       }
-      best = least + PALETTE_SIZE;
+      best = least + PALETTE_SIZE * Math.min(used.get(least) ?? 1, VARIANT_COUNT - 1);
     }
     slots.set(track.id, best);
     placed.push(track);

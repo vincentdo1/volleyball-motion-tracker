@@ -1,6 +1,8 @@
 import type { ActorRefFrom } from 'xstate';
 import type { EngineApi } from '@/contracts/protocol';
+import { toast } from '@/ui/toaster';
 import type { appMachine } from './machine';
+import { noticeFor } from './notices';
 import { EtaSmoother } from './results/eta';
 import { useSessionStore } from './stores/session';
 
@@ -22,7 +24,11 @@ export function bridgeEngine(
       session().setProgress(e.progress, eta.update(now(), e.progress.framesDone, e.progress.framesTotal));
     }),
     engine.on('final', (e) => session().setFinal(e.result)),
-    engine.on('warning', (e) => session().addWarning(e.warning)),
+    engine.on('warning', (e) => {
+      session().addWarning(e.warning);
+      const notice = noticeFor(e.warning);
+      if (notice) toast(notice.title, { id: e.warning.code, description: notice.description });
+    }),
     engine.on('state', (e) => {
       if (e.state === 'done') actor.send({ type: 'ENGINE_DONE' });
     }),

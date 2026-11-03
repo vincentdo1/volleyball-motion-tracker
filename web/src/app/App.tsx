@@ -5,6 +5,7 @@ import { Toaster } from '@/ui/toaster';
 import { TooltipProvider } from '@/ui/tooltip';
 import { bridgeEngine } from './bridge';
 import { PrivacySheet } from './components/PrivacySheet';
+import { ResumeDialog } from './components/ResumeDialog';
 import { SettingsSheet } from './components/SettingsSheet';
 import { ShortcutsSheet } from './components/ShortcutsSheet';
 import { runCapabilityCheck } from './diagnostics';
@@ -14,6 +15,7 @@ import { About } from './screens/About';
 import { Landing } from './screens/Landing';
 import { Problem } from './screens/Problem';
 import { Results } from './screens/Results';
+import { useSessionStore } from './stores/session';
 import { useSettingsStore } from './stores/settings';
 import { useUiStore } from './stores/ui';
 
@@ -41,6 +43,8 @@ export function App() {
   });
   const state = useSelector(actor, (s) => s.value);
   const error = useSelector(actor, (s) => s.context.error);
+  const resume = useSelector(actor, (s) => s.context.resume);
+  const durationS = useSessionStore((s) => (s.clip ? s.clip.durationUs / 1e6 : 0));
 
   useEffect(() => startAppearanceSync(), []);
   // the e2e smoke test and bug reports read window.__caps whatever screen is showing
@@ -55,6 +59,7 @@ export function App() {
       case 'booting':
       case 'landing':
       case 'probing':
+      case 'offering':
         return <Landing onFile={(file) => actor.send({ type: 'PICK', file })} busy={state === 'probing'} mock={mock} />;
       case 'analyzing':
       case 'results':
@@ -86,6 +91,14 @@ export function App() {
       <SettingsSheet />
       <ShortcutsSheet />
       <PrivacySheet />
+      <ResumeDialog
+        open={state === 'offering'}
+        resume={resume}
+        durationS={durationS}
+        onContinue={() => actor.send({ type: 'CONTINUE' })}
+        onStartOver={() => actor.send({ type: 'START_OVER' })}
+        onClose={() => actor.send({ type: 'NEW_CLIP' })}
+      />
       <Toaster />
     </TooltipProvider>
   );

@@ -1,5 +1,5 @@
 import { TriangleAlert } from 'lucide-react';
-import { type EngineError, ERROR_DEFAULTS } from '@/contracts/errors';
+import { type EngineError, type EngineErrorCode, ERROR_DEFAULTS } from '@/contracts/errors';
 import { Button } from '@/ui/button';
 import { AppHeader } from '../components/AppHeader';
 
@@ -11,6 +11,18 @@ export interface ProblemProps {
   readonly onFallbackTier: () => void;
   readonly onNewClip: () => void;
 }
+
+/** Their messages carry runtime output (shader or ONNX Runtime text): kept under Details, not shown as the explanation. */
+const TECHNICAL: readonly EngineErrorCode[] = [
+  'model-load',
+  'gpu-unavailable',
+  'gpu-lost',
+  'out-of-memory',
+  'inference-timeout',
+  'inference-failed',
+  'worker-crashed',
+  'internal',
+];
 
 const BROWSER_HINT = 'Try a recent version of Chrome or Edge on a computer. Safari on a Mac works for most clips.';
 
@@ -55,7 +67,7 @@ export function Problem({ error, terminal = false, onRetry, onFallbackTier, onNe
         <TriangleAlert aria-hidden className="size-8 text-id-5" />
         <div role="alert" className="flex flex-col gap-5">
           <h1 className="font-semibold text-[28px] leading-tight tracking-tight">{title}</h1>
-          {error.message !== title && <p className="text-text-2">{error.message}</p>}
+          {error.message !== title && !TECHNICAL.includes(error.code) && <p className="text-text-2">{error.message}</p>}
         </div>
         {error.action === 'change-browser' && <p className="text-text-2">{BROWSER_HINT}</p>}
         <div className="flex flex-wrap gap-2">
@@ -69,6 +81,7 @@ export function Problem({ error, terminal = false, onRetry, onFallbackTier, onNe
         <details className="text-[13px] text-text-2">
           <summary className="cursor-pointer">Details</summary>
           <p className="mt-2 font-mono">{error.code}</p>
+          {TECHNICAL.includes(error.code) && <p className="mt-1 break-words font-mono">{error.message}</p>}
         </details>
       </main>
     </div>
