@@ -13,12 +13,14 @@ import { ProgressTracker } from './progress';
 import type { AckWindow, RunControl } from './run-control';
 import type { FramePlan } from './schedule';
 import type { Streamer } from './streamer';
-import { Watchdog } from './watchdog';
+import { COLD_START_LIMIT_MS, Watchdog, withTimeout } from './watchdog';
 
 /**
- * Frames the ML pipeline may work on at once. The WebGPU pipeline is fed one frame at a time until its shared GPU
- * buffers are concurrency-safe: with two frames in flight the engine worker blocks inside ORT for good (M2-1).
- * The CPU tiers overlap the next frame's preprocessing with the current inference.
+ * Frames the ML pipeline may work on at once. The WebGPU pipeline now serializes its model runs, so two frames in
+ * flight are safe, but they are not faster: gtu (991 frames) took 46.4 s with one and 46.2 s with two (M2-16, mean of
+ * four runs each), so it is fed one frame at a time. Before the pipeline serialized, two frames in flight blocked the
+ * engine worker inside ORT for good (M2-1). The CPU tiers overlap the next frame's preprocessing with the current
+ * inference.
  */
 export const MAX_IN_FLIGHT: Readonly<Record<ExecutionBackend, number>> = { webgpu: 1, wasm: 2 };
 const STAGE_EMA = 0.2;
@@ -65,18 +67,6 @@ function inferenceError(error: unknown): EngineError {
   });
 }
 
-function withTimeout<T>(work: Promise<T>, limitMs: number, ptsUs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(fail('inference-timeout', `No result for the frame at ${ptsUs} us after ${Math.round(limitMs)} ms.`)),
-      limitMs,
-    );
-  });
-  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
-}
-
 /**
  * Pull-based decode loop: one sample at a time from the decoder (which itself queues at most 4), at most
  * `maxInFlight` frames inside the ML pipeline, results consumed strictly in presentation order, and every
@@ -93,7 +83,7 @@ export class FrameLoop {
 
   constructor(private readonly deps: FrameLoopDeps) {
     const { clip, plan } = deps;
-    this.watchdog = new Watchdog(deps.timeoutFloorMs);
+    this.watchdog = new Watchdog(deps.timeoutFloorMs, COLD_START_LIMIT_MS);
     this.framesDone = deps.resumedFrames;
     this.lastPtsUs = deps.startUs;
     const { ptsUs } = clip.frameTable;
@@ -198,7 +188,10 @@ export class FrameLoop {
     } catch (error) {
       work = Promise.reject(error);
     }
-    const result = withTimeout(work, this.watchdog.limitMs(), ptsUs).finally(() => {
+    const limitMs = this.watchdog.limitMs();
+    const timeout = () =>
+      fail('inference-timeout', `No result for the frame at ${ptsUs} us after ${Math.round(limitMs)} ms.`);
+    const result = withTimeout(work, limitMs, timeout).finally(() => {
       frame.close();
       sample.close();
       releaseFrame();

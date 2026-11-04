@@ -26,6 +26,8 @@ export interface StubMlOptions {
   readonly persons?: number;
   /** Simulated latency of one `process()` call. */
   readonly delayMs?: number;
+  /** Extra latency of the first `process()` call, like the shader compilation of a cold start. */
+  readonly coldDelayMs?: number;
   /** Frames the stub ball model buffers before it returns results (the real model needs 9). */
   readonly ballWindow?: number;
   /** `process()` rejects with `inference-failed` at this PTS. */
@@ -90,6 +92,7 @@ function createStubPipeline(
   const ballWindow = options.ballWindow ?? 3;
   let pendingBall: number[] = [];
   let running = 0;
+  let cold = true;
   const flushBall = (): BallFrameCandidates[] => {
     const results = pendingBall.map((ptsUs) => ({ ptsUs, candidates: [stubBallAt(ptsUs)] }));
     pendingBall = [];
@@ -112,7 +115,9 @@ function createStubPipeline(
       }
       running++;
       try {
-        if (options.delayMs) await sleep(options.delayMs);
+        const delayMs = (options.delayMs ?? 0) + (cold ? (options.coldDelayMs ?? 0) : 0);
+        cold = false;
+        if (delayMs) await sleep(delayMs);
       } finally {
         running--;
       }

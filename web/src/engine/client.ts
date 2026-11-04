@@ -23,7 +23,7 @@ import {
   type StartOptions,
 } from '@/contracts/protocol';
 import { EngineException, toEngineError } from './core/engine-exception';
-import { Watchdog } from './process/watchdog';
+import { AwakeMeter, COLD_START_LIMIT_MS, Watchdog } from './process/watchdog';
 
 export interface EngineClientOptions {
   /** Creates the engine worker; `generation` counts restarts (0 for the first worker). */
@@ -37,6 +37,9 @@ const LOSS_WINDOW_MS = 60_000;
 /**
  * A processing worker reports progress several times a second. One that stays silent for this long, or for ten
  * times its usual gap, has its thread blocked (inside the inference runtime): no timer in the worker can see that.
+ * Until its first report it gets the cold-start limit instead, because the first frame can compile shaders. The
+ * silence is measured with an `AwakeMeter`, so time in which the page itself did not run (the machine slept, the tab
+ * was frozen) is not held against the worker.
  */
 const STALL_FLOOR_MS = 12_000;
 const STALL_POLL_MS = 1000;
@@ -91,11 +94,13 @@ class EngineClient implements EngineApi {
   private losses: number[] = [];
   private recovering = false;
   private readonly silence: Watchdog;
-  private lastHeardMs = 0;
+  private readonly meter = new AwakeMeter(STALL_POLL_MS);
   private stallTimer: ReturnType<typeof setInterval> | undefined;
+  /** Stalls of the current run so far. */
+  private stalls = 0;
 
   constructor(private readonly options: EngineClientOptions) {
-    this.silence = new Watchdog(options.stallFloorMs ?? STALL_FLOOR_MS);
+    this.silence = new Watchdog(options.stallFloorMs ?? STALL_FLOOR_MS, COLD_START_LIMIT_MS);
   }
 
   get state(): EngineState {
@@ -206,7 +211,7 @@ class EngineClient implements EngineApi {
   }
 
   private receive(event: EngineEvent): void {
-    this.heard();
+    this.heard(event);
     switch (event.type) {
       case 'reply': {
         const pending = this.pending.get(event.requestId);
@@ -218,7 +223,10 @@ class EngineClient implements EngineApi {
       case 'state':
         this.current = event.state;
         this.watchStall(event.state === 'processing');
-        if (!this.recovering && ['opened', 'done', 'ready'].includes(event.state)) this.startOptions = null;
+        if (!this.recovering && ['opened', 'done', 'ready'].includes(event.state)) {
+          this.startOptions = null;
+          this.stalls = 0;
+        }
         break;
       case 'ready':
         this.ready = event;
@@ -275,10 +283,13 @@ class EngineClient implements EngineApi {
 
   // ---- stall supervision ------------------------------------------------------------------------------------
 
-  private heard(): void {
-    const now = Date.now();
-    if (this.stallTimer !== undefined) this.silence.observe(now - this.lastHeardMs);
-    this.lastHeardMs = now;
+  /**
+   * Any message shows the worker's thread is not blocked. The pace the limit adapts to is the one of its progress
+   * reports, so the replies and state changes that come with a start do not end the cold start.
+   */
+  private heard(event: EngineEvent): void {
+    if (event.type === 'progress' && this.stallTimer !== undefined) this.silence.observe(this.meter.tick());
+    this.meter.reset();
   }
 
   /** Watches the worker for silence while it processes; any other state needs no supervision. */
@@ -286,12 +297,13 @@ class EngineClient implements EngineApi {
     clearInterval(this.stallTimer);
     this.stallTimer = undefined;
     if (!processing) return;
-    this.lastHeardMs = Date.now();
+    this.silence.reset();
+    this.meter.reset();
     this.stallTimer = setInterval(() => this.checkStall(), STALL_POLL_MS);
   }
 
   private checkStall(): void {
-    if (Date.now() - this.lastHeardMs < this.silence.limitMs()) return;
+    if (this.meter.tick() < this.silence.limitMs()) return;
     const plan = this.canRecover() ? this.recoveryPlan('stalled') : null;
     if (plan) void this.recover(plan);
     else this.abort(engineError('inference-timeout', 'The analysis stopped responding.'));
@@ -325,6 +337,9 @@ class EngineClient implements EngineApi {
         };
       }
       case 'stalled': {
+        // A stall can be a hiccup of the host rather than a hang, and a slower tier stays for the rest of the session,
+        // so the first stall of a run only restarts the worker; a stall after that steps down.
+        if (this.stalls++ === 0) return {};
         const tier = stepDownTier(ready.tier, isolated);
         if (!tier) return null;
         return {

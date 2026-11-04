@@ -1,16 +1,53 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EngineApi, EngineEvent, EngineEventOf } from '@/contracts/protocol';
-import type { EngineHandle } from './client';
+import { createEngine, type EngineHandle } from './client';
 import { openClip } from './ingest/open-clip';
 import { createStubEngine, fixtureFile } from './testing/stub-engine';
+import type { StubWorkerConfig } from './testing/stub-engine.worker';
 
 const CLIP = 'volleyball_spike_attempt_04.mp4';
 let engine: EngineHandle | undefined;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await engine?.dispose();
   engine = undefined;
 });
+
+/** A worker the test can put to sleep: the page hears nothing from it until it wakes, like a machine that is asleep. */
+class SleepyWorker extends EventTarget {
+  private held: MessageEvent[] | null = null;
+
+  constructor(private readonly worker: Worker) {
+    super();
+    worker.addEventListener('message', (event) => (this.held ? this.held.push(event) : this.forward(event)));
+    worker.addEventListener('error', (event) =>
+      this.dispatchEvent(new ErrorEvent('error', { message: event.message })),
+    );
+  }
+
+  postMessage(message: unknown): void {
+    this.worker.postMessage(message);
+  }
+
+  terminate(): void {
+    this.worker.terminate();
+  }
+
+  sleep(): void {
+    this.held = [];
+  }
+
+  wake(): void {
+    const held = this.held ?? [];
+    this.held = null;
+    for (const event of held) this.forward(event);
+  }
+
+  private forward(event: MessageEvent): void {
+    this.dispatchEvent(new MessageEvent('message', { data: event.data }));
+  }
+}
 
 function record<T extends EngineEvent['type']>(api: EngineApi, type: T): EngineEventOf<T>[] {
   const out: EngineEventOf<T>[] = [];
@@ -91,7 +128,7 @@ describe('stalls', () => {
     expect([...warnings, ...errors]).toEqual([]);
   }, 60_000);
 
-  it('detects a blocked worker thread, steps down a tier and resumes to the end', async () => {
+  it('restarts a blocked worker thread on the same tier and resumes to the end, without a notice', async () => {
     const blockAtPtsUs = await ptsOfFrame(60);
     engine = createStubEngine((generation) => (generation === 0 ? { ml: { blockAtPtsUs } } : {}), {
       stallFloorMs: 1500,
@@ -105,15 +142,17 @@ describe('stalls', () => {
     const done = until(engine, 'final');
     await engine.start();
     await done;
-    expect(errors).toEqual([]);
-    expect(warnings.map((w) => [w.warning.code, w.warning.detail?.reason])).toContainEqual(['slow-mode', 'stalled']);
-    expect(readies.map((r) => r.tier)).toEqual(['webgpu-default', 'webgpu-lite']);
+    expect([...errors, ...warnings]).toEqual([]);
+    expect(readies.map((r) => r.tier)).toEqual(['webgpu-default', 'webgpu-default']);
     expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
   }, 60_000);
 
-  it('steps down when the worker watchdog reports a frame that never completes', async () => {
-    const hangAtPtsUs = await ptsOfFrame(60);
-    engine = createStubEngine((generation) => (generation === 0 ? { ml: { hangAtPtsUs }, timeoutFloorMs: 300 } : {}));
+  it('steps down a tier when the restarted worker blocks as well, and resumes to the end', async () => {
+    const blockAtPtsUs = await ptsOfFrame(60);
+    engine = createStubEngine((generation) => (generation <= 1 ? { ml: { blockAtPtsUs } } : {}), {
+      stallFloorMs: 1500,
+    });
+    const warnings = record(engine, 'warning');
     const errors = record(engine, 'error');
     const readies = record(engine, 'ready');
     const finals = record(engine, 'final');
@@ -123,7 +162,78 @@ describe('stalls', () => {
     await engine.start();
     await done;
     expect(errors).toEqual([]);
-    expect(readies.map((r) => r.tier)).toEqual(['webgpu-default', 'webgpu-lite']);
+    expect(warnings.map((w) => [w.warning.code, w.warning.detail?.reason])).toEqual([['slow-mode', 'stalled']]);
+    expect(readies.map((r) => r.tier)).toEqual(['webgpu-default', 'webgpu-default', 'webgpu-lite']);
+    expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
+  }, 60_000);
+
+  it('restarts, then steps down, when the worker watchdog reports a frame that never completes', async () => {
+    const hangAtPtsUs = await ptsOfFrame(60);
+    engine = createStubEngine((generation) => (generation <= 1 ? { ml: { hangAtPtsUs }, timeoutFloorMs: 300 } : {}));
+    const errors = record(engine, 'error');
+    const readies = record(engine, 'ready');
+    const finals = record(engine, 'final');
+    await engine.init({ tierOverride: 'webgpu-default' });
+    await engine.open(await fixtureFile(CLIP));
+    const done = until(engine, 'final');
+    await engine.start();
+    await done;
+    expect(errors).toEqual([]);
+    expect(readies.map((r) => r.tier)).toEqual(['webgpu-default', 'webgpu-default', 'webgpu-lite']);
+    expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
+  }, 60_000);
+
+  it('gives a first frame that compiles slowly time before it counts as hung', async () => {
+    engine = createStubEngine({ ml: { coldDelayMs: 1500 }, timeoutFloorMs: 300 });
+    const errors = record(engine, 'error');
+    const warnings = record(engine, 'warning');
+    const finals = record(engine, 'final');
+    await engine.init({ tierOverride: 'wasm-st' });
+    await engine.open(await fixtureFile(CLIP));
+    const ended = Promise.race([until(engine, 'final'), until(engine, 'error')]);
+    await engine.start();
+    expect((await ended).type).toBe('final');
+    expect([...errors, ...warnings]).toEqual([]);
+    expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
+  }, 60_000);
+
+  it('does not take a machine that slept for a stalled worker', async () => {
+    const config: StubWorkerConfig = { ml: { delayMs: 30 } };
+    const sleepers: SleepyWorker[] = [];
+    const clockSkew = { ms: 0 };
+    const monotonic = performance.now.bind(performance);
+    const wall = Date.now.bind(Date);
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonic() + clockSkew.ms);
+    vi.spyOn(Date, 'now').mockImplementation(() => wall() + clockSkew.ms);
+    engine = createEngine({
+      createWorker: () => {
+        const worker = new Worker(new URL('./testing/stub-engine.worker.ts', import.meta.url), {
+          type: 'module',
+          name: JSON.stringify(config),
+        });
+        const sleepy = new SleepyWorker(worker);
+        sleepers.push(sleepy);
+        return sleepy as unknown as Worker;
+      },
+    });
+    const warnings = record(engine, 'warning');
+    const errors = record(engine, 'error');
+    const readies = record(engine, 'ready');
+    const progress = record(engine, 'progress');
+    const finals = record(engine, 'final');
+    await engine.init({ tierOverride: 'webgpu-default' });
+    await engine.open(await fixtureFile(CLIP));
+    const done = until(engine, 'final');
+    await engine.start();
+    await vi.waitFor(() => expect(progress.length).toBeGreaterThan(8), { timeout: 20_000 });
+    // The machine goes to sleep for 20 minutes. When it wakes, the page's timer fires before the worker is heard from.
+    sleepers[0]?.sleep();
+    clockSkew.ms += 20 * 60_000;
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    sleepers[0]?.wake();
+    await done;
+    expect([...errors, ...warnings]).toEqual([]);
+    expect(readies).toHaveLength(1);
     expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
   }, 60_000);
 
