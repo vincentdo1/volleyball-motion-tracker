@@ -11,8 +11,12 @@ const REF_LENGTH_FACTOR = 1.6;
 /** Share of confident keypoints that must sit inside the detector box (whole-pose check a). */
 const INSIDE_BOX_SHARE = 0.8;
 const BOX_MARGIN = 0.15;
+/** Apparent height over box height; the upper bound uses the measured joint extent only (3.2 torsos overshoots a box cut by the frame edge). */
 const APPARENT_HEIGHT_RANGE = [0.6, 1.5] as const;
-const SHOULDER_TORSO_RANGE = [0.25, 1.3] as const;
+/** A standing person is about this many torso lengths tall. */
+const TORSO_TO_HEIGHT = 3.2;
+/** Shoulder width over torso length has no floor: seen side-on the shoulders overlap and the ratio approaches 0. */
+const SHOULDER_TORSO_MAX = 1.3;
 const DUPLICATE_OKS = 0.5;
 const DUPLICATE_IOU = 0.6;
 
@@ -66,7 +70,7 @@ function confidentYExtent(kp: Float32Array, minScore: number): number {
 }
 
 /** Whole-pose checks (05 §2.6 a, b, d). A pose failing any of them is demoted to a marker for the frame. */
-function wholePoseOk(kp: Float32Array, box: RenderPlayer['box'], torso: number, apparent: number): boolean {
+function wholePoseOk(kp: Float32Array, box: RenderPlayer['box'], torso: number, extent: number): boolean {
   if (box) {
     const [x0, y0, x1, y1] = box;
     const mx = (x1 - x0) * BOX_MARGIN;
@@ -83,13 +87,12 @@ function wholePoseOk(kp: Float32Array, box: RenderPlayer['box'], torso: number, 
     if (confident > 0 && inside / confident < INSIDE_BOX_SHARE) return false;
     const boxHeight = y1 - y0;
     if (boxHeight > 0) {
-      const ratio = apparent / boxHeight;
-      if (ratio < APPARENT_HEIGHT_RANGE[0] || ratio > APPARENT_HEIGHT_RANGE[1]) return false;
+      if (Math.max(extent, torso * TORSO_TO_HEIGHT) / boxHeight < APPARENT_HEIGHT_RANGE[0]) return false;
+      if (extent / boxHeight > APPARENT_HEIGHT_RANGE[1]) return false;
     }
   }
   if (torso > 0) {
-    const ratio = pairDistance(kp, J.leftShoulder, J.rightShoulder) / torso;
-    if (ratio < SHOULDER_TORSO_RANGE[0] || ratio > SHOULDER_TORSO_RANGE[1]) return false;
+    if (pairDistance(kp, J.leftShoulder, J.rightShoulder) / torso > SHOULDER_TORSO_MAX) return false;
   }
   return true;
 }
@@ -107,7 +110,8 @@ export function assessPose(player: RenderPlayer): PoseAssessment {
   const hp = midpoint(kp, J.leftHip, J.rightHip);
   const torsoTrusted = sh !== null && hp !== null && sh.score > TORSO_MIN_SCORE && hp.score > TORSO_MIN_SCORE;
   const torso = sh && hp ? Math.hypot(sh.x - hp.x, sh.y - hp.y) : 0;
-  const apparent = Math.max(confidentYExtent(kp, 0.3), torso * 3.2);
+  const extent = confidentYExtent(kp, 0.3);
+  const apparent = Math.max(extent, torso * TORSO_TO_HEIGHT);
 
   for (const i of BODY_BONE_INDICES) {
     const style = BONE_STYLES[i];
@@ -131,7 +135,7 @@ export function assessPose(player: RenderPlayer): PoseAssessment {
     else if (kind === 'limb') limbs++;
   }
   let level: PoseAssessment['level'] = 'marker';
-  if (torsoTrusted && torsoBones >= 3 && wholePoseOk(kp, player.box, torso, apparent)) {
+  if (torsoTrusted && torsoBones >= 3 && wholePoseOk(kp, player.box, torso, extent)) {
     level = limbs >= 5 ? 'full' : limbs >= 1 ? 'partial' : 'torso';
   }
   if (level === 'marker') boneOk.fill(false);

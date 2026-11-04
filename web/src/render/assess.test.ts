@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { HALPE26_INDEX } from '@/contracts/halpe26';
 import { assessPose, findDuplicates } from './assess';
 import { BONE_STYLES } from './bones';
 import { makePlayer, withJoints } from './testing';
@@ -66,6 +67,36 @@ describe('assessPose', () => {
     const a = assessPose(p);
     expect(a.level).toBe('marker');
     expect(a.boneOk.every((ok) => !ok)).toBe(true);
+  });
+
+  it('keeps a side-on pose whose shoulders overlap (shoulder width near zero)', () => {
+    const p = withJoints(makePlayer(1), ['left_shoulder'], { x: 130 });
+    const shoulders = p.keypoints as Float32Array;
+    shoulders[HALPE26_INDEX.right_shoulder * 3] = 130;
+    expect(assessPose(p).level).toBe('full');
+  });
+
+  it('demotes a pose whose shoulders are wider than any torso', () => {
+    const p = withJoints(makePlayer(1), ['left_shoulder'], { dx: -200 });
+    expect(assessPose(p).level).toBe('marker');
+  });
+
+  it('keeps a close-up whose box is cut by the frame edge (torso long for the visible height)', () => {
+    // upper body only: the frame ends at the hips, so the box is 0.6 of the full-body height and 3.2 torsos overshoot it
+    const below = [
+      'left_knee',
+      'right_knee',
+      'left_ankle',
+      'right_ankle',
+      'left_big_toe',
+      'right_big_toe',
+      'left_small_toe',
+      'right_small_toe',
+      'left_heel',
+      'right_heel',
+    ] as const;
+    const p = withJoints(makePlayer(1), below, { score: 0.1 });
+    expect(assessPose({ ...p, box: [100, 100, 160, 184] }).level).toBe('partial');
   });
 
   it('demotes a pose whose apparent height disagrees with its box', () => {

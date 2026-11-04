@@ -24,6 +24,8 @@ const DEFAULT_BALL_TRAIL_S = 0.5;
 /** A gap longer than this between ball samples ends the trail: it never bridges a lost track. */
 const MAX_TRAIL_GAP_US = 250_000;
 const REF_SCORE = 0.6;
+/** Samples either side of a sample whose bones form its reference lengths. */
+const REF_WINDOW = 15;
 const FALLBACK_BALL_RADIUS = 8;
 const JOINTS = PERSON_KP_VALUES / 3;
 
@@ -34,23 +36,37 @@ function median(values: number[]): number {
   return values.length % 2 ? (values[mid] as number) : ((values[mid - 1] as number) + (values[mid] as number)) / 2;
 }
 
-/** Per-bone median length of a track over confident samples, indexed like RENDER_BONES (plausibility gate). */
+/**
+ * Per-bone reference length of every sample of a track (`samples x BONE_STYLES.length`, display px): the median over
+ * the confident samples within REF_WINDOW samples either side. Players change apparent scale as they move towards or
+ * away from the camera, so a clip-wide median would read every bone of a near player as a glitch; a local one follows
+ * the scale yet a swap or jump lasting a few frames stays an outlier. 0 = no confident sample nearby.
+ */
 export function computeRefBoneLengths(track: TrackColumns): Float32Array {
   const samples = track.ptsUs.length;
-  const out = new Float32Array(BONE_STYLES.length);
+  const bones = BONE_STYLES.length;
+  const out = new Float32Array(samples * bones);
+  const lengths = new Float32Array(samples);
   BONE_STYLES.forEach((style, i) => {
     const { a, b } = style.def;
-    const lengths: number[] = [];
     for (let s = 0; s < samples; s++) {
       const o = s * PERSON_KP_VALUES;
-      if ((track.kp[o + a * 3 + 2] as number) < REF_SCORE || (track.kp[o + b * 3 + 2] as number) < REF_SCORE) continue;
-      const length = Math.hypot(
-        (track.kp[o + a * 3] as number) - (track.kp[o + b * 3] as number),
-        (track.kp[o + a * 3 + 1] as number) - (track.kp[o + b * 3 + 1] as number),
-      );
-      if (Number.isFinite(length)) lengths.push(length);
+      const confident =
+        (track.kp[o + a * 3 + 2] as number) >= REF_SCORE && (track.kp[o + b * 3 + 2] as number) >= REF_SCORE;
+      lengths[s] = confident
+        ? Math.hypot(
+            (track.kp[o + a * 3] as number) - (track.kp[o + b * 3] as number),
+            (track.kp[o + a * 3 + 1] as number) - (track.kp[o + b * 3 + 1] as number),
+          )
+        : Number.NaN;
     }
-    out[i] = median(lengths);
+    for (let s = 0; s < samples; s++) {
+      const near: number[] = [];
+      for (let n = Math.max(0, s - REF_WINDOW); n <= Math.min(samples - 1, s + REF_WINDOW); n++) {
+        if (Number.isFinite(lengths[n] as number)) near.push(lengths[n] as number);
+      }
+      out[s * bones + i] = median(near);
+    }
   });
   return out;
 }
@@ -89,7 +105,7 @@ export function toRenderPlayer(
   };
 }
 
-function playerAt(track: TrackColumns, sample: number, ref: Float32Array): RenderPlayer {
+function playerAt(track: TrackColumns, sample: number, refs: Float32Array): RenderPlayer {
   const k = sample * PERSON_KP_VALUES;
   return toRenderPlayer(
     { trackId: track.id, label: track.label, colorSlot: track.colorSlot },
@@ -98,7 +114,7 @@ function playerAt(track: TrackColumns, sample: number, ref: Float32Array): Rende
     track.kp.subarray(k, k + PERSON_KP_VALUES),
     track.kpFlags.subarray(sample * JOINTS, (sample + 1) * JOINTS),
     track.sampleFlags[sample] as number,
-    ref,
+    refs.subarray(sample * BONE_STYLES.length, (sample + 1) * BONE_STYLES.length),
   );
 }
 
