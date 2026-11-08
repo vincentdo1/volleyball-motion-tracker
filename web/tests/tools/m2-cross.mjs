@@ -1,20 +1,18 @@
-/** Cross-browser probe: capability tier and one short clip end to end through the UI. node m2-cross.mjs webkit|firefox [headed] */
+/**
+ * Cross-browser probe: capability tier and one short clip end to end through the UI.
+ *   node m2-cross.mjs webkit|firefox|chromium [headed] [port]     (port: 2nd/3rd argument or PORT, default 5184)
+ */
 import { chromium, firefox, webkit } from '@playwright/test';
 
-const [name, headed] = process.argv.slice(2);
+const rest = process.argv.slice(2);
+const [name] = rest;
+const headed = rest.includes('headed') ? 'headed' : '';
+const port = rest.find((x) => /^\d{4,5}$/.test(x)) ?? process.env.PORT ?? '5184';
+const base = `http://127.0.0.1:${port}`;
 const type = { webkit, firefox, chromium }[name];
 const clip = process.env.CLIP ?? '../test_videos/volleyball_spike_attempt_04.mp4';
 const browser = await type.launch({ headless: headed !== 'headed' });
 const ctx = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1280, height: 800 } });
-if (process.env.PATCH) {
-  await ctx.route(/engine\.worker-.*\.js(\?.*)?$/, async (route) => {
-    const res = await route.fetch();
-    await route.fulfill({
-      response: res,
-      body: (await res.text()).replace('this.inFlight.length>=2', 'this.inFlight.length>=1'),
-    });
-  });
-}
 const page = await ctx.newPage();
 const logs = [];
 page.on(
@@ -25,7 +23,7 @@ page.on('pageerror', (e) => logs.push(`pageerror: ${String(e).slice(0, 200)}`));
 page.on('requestfailed', (r) => logs.push(`requestfailed: ${r.url().slice(-60)} ${r.failure()?.errorText}`));
 page.on('response', (r) => /models|ort/.test(r.url()) && logs.push(`resp ${r.status()} ${r.url().slice(-50)}`));
 const out = { browser: name, version: browser.version() };
-await page.goto('http://127.0.0.1:5184/#/about');
+await page.goto(`${base}/#/about`);
 await page.getByTestId('cap-tier').waitFor({ timeout: 60000 });
 await page.waitForTimeout(4000);
 out.caps = await page.evaluate(() =>
@@ -46,7 +44,7 @@ out.caps = await page.evaluate(() =>
       }
     : {},
 );
-await page.goto('http://127.0.0.1:5184/');
+await page.goto(`${base}/`);
 await page.getByTestId('file-input').waitFor({ state: 'attached' });
 if (process.env.WAIT) await page.waitForTimeout(Number(process.env.WAIT));
 const t0 = Date.now();
@@ -72,7 +70,7 @@ while (Date.now() < deadline) {
   await page.waitForTimeout(1000);
 }
 out.result ??= { status: 'timeout', last };
-await page.screenshot({ path: `/tmp/m2-cross-${name}.png` });
+await page.screenshot({ path: `${process.env.OUT ?? '/tmp'}/m2-cross-${name}.png` });
 out.logs = logs.slice(0, 40);
 console.log(JSON.stringify(out, null, 1));
 await browser.close();

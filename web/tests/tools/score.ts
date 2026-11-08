@@ -2,8 +2,9 @@
  * Scores bench-format prediction files against the fused teacher and prints the bake-off tables.
  *
  *   node tests/tools/score.ts --preds "R1=path/a.json,Other=path/b.json.gz@0.4" [--frames static|run|all]
- *        [--target fused|R|V] [--min-support N] [--jitter "R1=path/video.json"] [--out summary.json]
+ *        [--target fused|R|V] [--min-support N] [--raw-teacher] [--jitter "R1=path/video.json"] [--out summary.json]
  *
+ * The beach net posts are ignore regions unless --raw-teacher (the bake-off reproduction uses the raw teacher).
  * Reference data comes from VBT_BAKEOFF_DIR (teacher.json, frames_meta.json). `label=path@0.4` keeps only persons
  * scored >= 0.4. Labels must not contain `=`, `,` or `@`.
  */
@@ -12,7 +13,7 @@ import { dirname } from 'node:path';
 import { parseArgs } from 'node:util';
 import { type EvaluationInput, evaluate } from '../harness/evaluate.ts';
 import { toMarkdown } from '../harness/format.ts';
-import { loadFramesMeta, loadPredictions, loadTeacher } from '../harness/io.ts';
+import { loadFramesMeta, loadPredictions, loadTeacher, loadTeacherWithoutPosts } from '../harness/io.ts';
 import { DEFAULT_OPTIONS } from '../harness/metrics.ts';
 import type { FrameSelection, Target } from '../harness/types.ts';
 
@@ -41,11 +42,12 @@ const { values } = parseArgs({
     target: { type: 'string' },
     'min-support': { type: 'string' },
     out: { type: 'string' },
+    'raw-teacher': { type: 'boolean' },
   },
 });
 
 const input: EvaluationInput = {
-  teacher: loadTeacher(),
+  teacher: values['raw-teacher'] ? loadTeacher() : loadTeacherWithoutPosts(),
   meta: loadFramesMeta(),
   configs: parseSpecs(values.preds),
   jitterOverrides: parseSpecs(values.jitter),

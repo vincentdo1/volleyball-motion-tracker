@@ -36,20 +36,12 @@ export const CASES_DIR = `${process.env.HOME}/.cache/volleyball-motion-tracker/f
 export const isPreview = process.env.E2E_TARGET === 'preview';
 
 /**
- * M2-1 workaround: two `FramePipeline.process()` calls in flight deadlock the WebGPU worker, so the unmodified app never
- * leaves 0 %. Until it is fixed the real-engine suites serve the engine worker chunk with one frame in flight (a network
- * rewrite in the test; product code is untouched). `VBT_NO_WORKAROUND=1` runs the app as shipped.
+ * M2-1 is fixed (one frame at a time inside the pipeline, supervised worker), so the old test-side rewrite of the
+ * engine chunk is gone. `useRealEngine` stays as a hook so every suite keeps one place to prepare a context.
  */
-export const workaroundM21 = process.env.VBT_NO_WORKAROUND !== '1';
+export const workaroundM21 = false;
 
-export async function useRealEngine(context: BrowserContext): Promise<void> {
-  if (!workaroundM21) return;
-  await context.route(/engine\.worker-.*\.js(\?.*)?$/, async (route) => {
-    const response = await route.fetch();
-    const body = (await response.text()).replace('this.inFlight.length>=2', 'this.inFlight.length>=1');
-    await route.fulfill({ response, body });
-  });
-}
+export async function useRealEngine(_context: BrowserContext): Promise<void> {}
 
 export interface Processed {
   wallMs: number;

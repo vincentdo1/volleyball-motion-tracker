@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
+import { teacherWithIgnoreRegions } from './ignore-regions.ts';
 import type { BenchPredictions, FramesMeta, Teacher } from './types.ts';
 
 /** Directory with `teacher.json`, `frames_meta.json` and `eval/` (the bake-off data); same default as the dev server. */
@@ -15,6 +16,10 @@ export function readJson<T>(path: string): T {
 }
 
 export const loadTeacher = (dir = bakeoffDir()): Teacher => readJson<Teacher>(join(dir, 'teacher.json'));
+
+/** The teacher with the beach net posts marked as ignore regions (see `ignore-regions.ts`). */
+export const loadTeacherWithoutPosts = (dir = bakeoffDir()): Teacher =>
+  teacherWithIgnoreRegions(loadTeacher(dir), loadFramesMeta(dir));
 
 interface RawFrameMeta {
   file: string;

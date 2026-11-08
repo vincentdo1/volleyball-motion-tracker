@@ -14,13 +14,6 @@ const ctx = await browser.newContext({
   serviceWorkers: 'block',
   viewport: { width: 1440, height: 900 },
 });
-await ctx.route(/engine\.worker-.*\.js(\?.*)?$/, async (route) => {
-  const res = await route.fetch();
-  await route.fulfill({
-    response: res,
-    body: (await res.text()).replace('this.inFlight.length>=2', 'this.inFlight.length>=1'),
-  });
-});
 const out = {};
 const open = async () => {
   const page = await ctx.newPage();

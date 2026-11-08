@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { isPreview, processClip, repoVideo, useRealEngine } from './support';
+import { isPreview, repoVideo, useRealEngine } from './support';
 
 /** M2: cancel (keep / discard), restart after a cancel, and reload mid-run, on the real engine. */
 test.skip(!isPreview, 'real-engine suites need E2E_TARGET=preview (M2-2)');
@@ -49,7 +49,7 @@ test('keep partial shows the analysed part and offers the frame PNG', async ({ p
   await expect(page.getByRole('button', { name: 'Export Current frame' })).toBeEnabled();
 });
 
-test.fixme('M2-8: choosing a file right after Discard is accepted (the engine is still cancelling and rejects open with invalid-state)', async ({
+test('M2-8: choosing a file right after Discard is accepted (the engine is still cancelling and rejects open with invalid-state)', async ({
   page,
   context,
 }) => {
@@ -64,7 +64,7 @@ test.fixme('M2-8: choosing a file right after Discard is accepted (the engine is
     .waitFor({ state: 'attached', timeout: 120_000 });
 });
 
-test.fixme('M2-4: a kept partial result can export its tracking data (JSON, CSV) and the overlay video', async ({
+test('M2-4: a kept partial result can export its tracking data (JSON, CSV) and the overlay video', async ({
   page,
   context,
 }) => {
@@ -76,14 +76,31 @@ test.fixme('M2-4: a kept partial result can export its tracking data (JSON, CSV)
   await expect(page.getByRole('button', { name: 'Export Tracking data' })).toBeEnabled();
 });
 
-test.fixme('M2-5: after a reload the same clip resumes from the saved chunks (finished chunks skipped, result equal)', async ({
+test('M2-5: after a reload the same clip offers to continue and skips the finished 10 s chunks (result complete)', async ({
   page,
   context,
-}) => {
+}, testInfo) => {
+  test.setTimeout(300_000);
+  // Playwright's WebKit refuses OPFS sync access handles ("UnknownError ... transient reason"), so the engine falls back to
+  // its in-memory store and a reload loses the chunks. Real Safari is not covered here (M2-17, accepted limitation).
+  test.skip(testInfo.project.name.startsWith('webkit'), 'OPFS sync access handles do not work in Playwright WebKit');
   await useRealEngine(context);
-  await startAndWait(page, 50);
-  await page.reload();
+  const gtu = repoVideo('github_gtu_20250316_002_volleyball_tracking.mp4'); // chunks are 10 s windows: needs a clip longer than that
   const t0 = Date.now();
-  const rerun = await processClip(page, clip);
-  expect(rerun.wallMs).toBeLessThan((Date.now() - t0) * 0.7);
+  await page.goto('/');
+  await page.getByTestId('file-input').setInputFiles(gtu);
+  await expect.poll(() => percent(page), { timeout: 120_000 }).toBeGreaterThanOrEqual(50);
+  const halfMs = Date.now() - t0; // progress is close to linear, so a full run is about twice this
+  await page.reload();
+  await page.getByTestId('file-input').waitFor({ state: 'attached' });
+  await page.getByTestId('file-input').setInputFiles(gtu);
+  await expect(page.getByRole('dialog')).toContainText(/Continue where you left off/);
+  const t1 = Date.now();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page
+    .getByRole('status')
+    .filter({ hasText: /Analysis complete/ })
+    .waitFor({ state: 'attached', timeout: 240_000 });
+  expect(Date.now() - t1).toBeLessThan(halfMs * 2 * 0.85);
+  expect(await page.locator('ul[aria-label=Players] > li').count()).toBeGreaterThan(20);
 });

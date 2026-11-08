@@ -11,6 +11,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { clipGolden } from '../fixtures/clips.ts';
 import { at, get } from '../harness/access.ts';
+import { labelsWithIgnoreRegions } from '../harness/ignore-regions.ts';
 import { loadFramesMeta, loadTeacher, readJson } from '../harness/io.ts';
 import { linkRun } from '../harness/linker.ts';
 import { buildGt } from '../harness/metrics.ts';
@@ -86,7 +87,7 @@ function build(): { text: string; flags: Record<string, ReturnType<typeof linkRu
   for (let ops = shortTrackOps(current); ops.length; ops = shortTrackOps(current)) {
     current = applyOps(current, ops.slice(0, 1));
   }
-  return { text: formatJson(applyOps(current, overrides.ops), 'tracks.json'), flags };
+  return { text: formatJson(labelsWithIgnoreRegions(applyOps(current, overrides.ops)), 'tracks.json'), flags };
 }
 
 const { text, flags } = build();

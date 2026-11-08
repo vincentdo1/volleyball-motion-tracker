@@ -6,7 +6,7 @@ const chrome = `${homedir()}/Library/Caches/ms-playwright/chromium-1228/chrome-m
 const args = process.argv.slice(2);
 const b = await chromium.launch({ executablePath: chrome, headless: true, args });
 const p = await b.newPage();
-await p.goto('http://127.0.0.1:5184/#/about');
+await p.goto(`http://127.0.0.1:${process.env.PORT ?? 5184}/#/about`);
 await p.getByTestId('cap-tier').waitFor({ timeout: 30000 });
 await p.waitForTimeout(2500);
 console.log(

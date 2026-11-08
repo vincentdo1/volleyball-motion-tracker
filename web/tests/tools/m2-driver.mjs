@@ -37,17 +37,6 @@ const ctx = await browser.newContext({
   serviceWorkers: 'block',
   viewport: { width: 1440, height: 900 },
 });
-// M2-1 workaround (diagnostic, product code untouched): serve frame-loop.ts with MAX_IN_FLIGHT = 1 from the dev server
-if (process.env.VBT_PATCH_INFLIGHT) {
-  await ctx.route(/engine\.worker-.*\.js(\?.*)?$/, async (route) => {
-    const res = await route.fetch();
-    const body = (await res.text()).replace(
-      'this.inFlight.length>=2',
-      `this.inFlight.length>=${process.env.VBT_PATCH_INFLIGHT}`,
-    );
-    await route.fulfill({ response: res, body });
-  });
-}
 const page = await ctx.newPage();
 const log = { clip: basename(a.clip), console: [], errors: [], t: {} };
 page.on('console', (m) => {

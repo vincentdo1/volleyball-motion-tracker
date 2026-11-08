@@ -12,18 +12,11 @@ const browser = await chromium.launch({
   args: ['--window-size=1200,800'],
 });
 const ctx = await browser.newContext({ serviceWorkers: 'block', viewport: null });
-await ctx.route(/engine\.worker-.*\.js(\?.*)?$/, async (route) => {
-  const res = await route.fetch();
-  await route.fulfill({
-    response: res,
-    body: (await res.text()).replace('this.inFlight.length>=2', 'this.inFlight.length>=1'),
-  });
-});
 const page = await ctx.newPage();
 page.on('close', () => console.log('page closed'));
 page.on('crash', () => console.log('page crashed'));
 browser.on('disconnected', () => console.log('browser disconnected'));
-await page.goto('http://127.0.0.1:5184/');
+await page.goto(`http://127.0.0.1:${process.env.PORT ?? 5184}/`);
 await page.getByTestId('file-input').setInputFiles(clip);
 const pct = () =>
   page.evaluate(() => ({

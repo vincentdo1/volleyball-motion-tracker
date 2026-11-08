@@ -26,3 +26,13 @@ export function sigma(joint: number): number {
   if (value === undefined) throw new Error(`no OKS sigma for joint ${joint}`);
   return value;
 }
+
+/** Share of `box` that lies inside `region`. */
+export function containment(box: readonly number[], region: readonly number[]): number {
+  const [bx0, by0, bx1, by1] = box as [number, number, number, number];
+  const [rx0, ry0, rx1, ry1] = region as [number, number, number, number];
+  const w = Math.max(0, Math.min(bx1, rx1) - Math.max(bx0, rx0));
+  const h = Math.max(0, Math.min(by1, ry1) - Math.max(by0, ry0));
+  const area = (bx1 - bx0) * (by1 - by0);
+  return area > 0 ? (w * h) / area : 0;
+}

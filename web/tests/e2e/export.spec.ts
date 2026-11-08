@@ -55,7 +55,7 @@ for (const clip of ['volleyball_spike_attempt_03.mp4', 'github_beach_st_lenina_2
       for (const t of doc.tracks) for (const p of t.samples.ptsUs) expect(known.has(p)).toBe(true);
     });
 
-    test.fixme('M2-3: JSON validates against posetrack.schema.json (models[].inputSize is [0, 0] for the detector)', () => {
+    test('M2-3: JSON validates against posetrack.schema.json (models[].inputSize is [0, 0] for the detector)', () => {
       const schema = JSON.parse(
         readFileSync(join(import.meta.dirname, '../../src/contracts/posetrack.schema.json'), 'utf8'),
       );
