@@ -7,7 +7,7 @@ import {
   secondsToUs,
 } from '@/contracts/frame-table';
 import type { FrameTableColumns } from '@/contracts/posetrack';
-import { containTransform, type RenderOptions, type SkeletonRenderer } from '@/contracts/renderer';
+import { containTransform, type RenderOptions, type RenderStats, type SkeletonRenderer } from '@/contracts/renderer';
 import type { FrameSource } from '@/render';
 
 /** Playback rates offered in the UI (05 §3.2). Below 0.25 Gecko mutes; the player mutes below 0.5 by default. */
@@ -39,6 +39,8 @@ export interface PlayerControllerConfig {
   readonly getOptions: () => RenderOptions;
   /** Called after each overlay draw with the frame it was drawn for (tests and sync probes). */
   readonly onDraw?: (frameIndex: number, mediaTimeS: number | null) => void;
+  /** Called with the renderer's stats after each overlay draw (e.g. to tell the user ghosts were skipped). */
+  readonly onStats?: (stats: RenderStats) => void;
 }
 
 type FrameCallbackMetadata = { mediaTime: number; presentedFrames: number };
@@ -199,7 +201,7 @@ export class PlayerController {
     const source = getSource();
     if (source) {
       const view = containTransform(displayWidth, displayHeight, this.cssWidth, this.cssHeight, this.dpr);
-      renderer.draw(ctx, source.frameAt(frameIndex), view, getOptions());
+      this.config.onStats?.(renderer.draw(ctx, source.frameAt(frameIndex), view, getOptions()));
     }
     this.config.onDraw?.(frameIndex, mediaTimeS);
   }

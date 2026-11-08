@@ -1,4 +1,4 @@
-/** Wordmark with a small skeleton glyph. "Skeletal" is the placeholder product name (05 §7.4). */
+/** Wordmark with a small skeleton glyph. "Skeletal" is the final product name (confirmed by the owner). */
 export function Brand({ compact = false }: { compact?: boolean }) {
   return (
     <span className="inline-flex items-center gap-2.5 font-semibold text-[16px] tracking-tight">

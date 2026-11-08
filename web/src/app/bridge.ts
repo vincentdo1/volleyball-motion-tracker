@@ -19,7 +19,7 @@ export function bridgeEngine(
   const session = useSessionStore.getState;
   const offs = [
     engine.on('opened', () => eta.reset()),
-    engine.on('chunk', (e) => session().addChunk(e.batch)),
+    engine.on('chunk', (e) => session().addChunk(e.batch, e.seq)),
     engine.on('progress', (e) => {
       session().setProgress(e.progress, eta.update(now(), e.progress.framesDone, e.progress.framesTotal));
     }),

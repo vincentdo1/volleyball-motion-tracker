@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { assignColorSlots, colorVariant, isReusedSlot, PALETTE_SIZE, slotColor, VARIANT_COUNT } from './palette';
+import { oklabDistance, type Rgb } from './color';
+import {
+  assignColorSlots,
+  colorVariant,
+  isReusedSlot,
+  MIN_VARIANT_DISTANCE,
+  PALETTE_SIZE,
+  slotColor,
+  VARIANT_COUNT,
+} from './palette';
 
 const track = (id: number, first: number, last: number) => ({ id, firstPtsUs: first, lastPtsUs: last });
 
@@ -24,7 +33,8 @@ describe('assignColorSlots', () => {
     expect(values.slice(0, PALETTE_SIZE).every((s) => !isReusedSlot(s))).toBe(true);
     expect(new Set(values.slice(0, PALETTE_SIZE)).size).toBe(PALETTE_SIZE);
     expect(values.slice(PALETTE_SIZE).every(isReusedSlot)).toBe(true);
-    expect(slotColor(values[8] as number)).toEqual(slotColor((values[8] as number) % PALETTE_SIZE));
+    // the 9th player is told apart from the player sharing its hue by colour, not by the ring alone
+    expect(slotColor(values[8] as number)).not.toEqual(slotColor((values[8] as number) % PALETTE_SIZE));
   });
 });
 
@@ -37,12 +47,18 @@ describe('repeated hues', () => {
     for (let slot = 0; slot < PALETTE_SIZE * VARIANT_COUNT; slot++) looks.add(look(slot));
     expect(looks.size).toBe(PALETTE_SIZE * VARIANT_COUNT);
     for (let hue = 0; hue < PALETTE_SIZE; hue++) {
-      const [plain, ring, light, dark] = [0, 1, 2, 3].map((v) => slotColor(hue + v * PALETTE_SIZE));
-      expect(ring).toEqual(plain);
+      const variants = [0, 1, 2, 3].map((v) => slotColor(hue + v * PALETTE_SIZE));
+      const [plain, dark, light, deep] = variants;
+      // the first reuse (ring + shade) is already a different colour from the plain hue
+      expect(dark).not.toEqual(plain);
       for (let c = 0; c < 3; c++) {
         expect(light?.[c] as number).toBeGreaterThanOrEqual(plain?.[c] as number);
         expect(dark?.[c] as number).toBeLessThanOrEqual(plain?.[c] as number);
+        expect(deep?.[c] as number).toBeLessThanOrEqual(dark?.[c] as number);
       }
+      for (let i = 0; i < variants.length; i++)
+        for (let j = i + 1; j < variants.length; j++)
+          expect(oklabDistance(variants[i] as Rgb, variants[j] as Rgb)).toBeGreaterThanOrEqual(MIN_VARIANT_DISTANCE);
     }
     expect(slotColor(PALETTE_SIZE * VARIANT_COUNT)).toEqual(slotColor(0));
     expect(colorVariant(61)).toBe(3);

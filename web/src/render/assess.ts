@@ -4,8 +4,20 @@ import { BODY_BONE_INDICES, BONE_STYLES, J } from './bones';
 
 /** Joint score below which a bone is dropped (05 §2.6). */
 export const BONE_MIN_SCORE = 0.35;
-/** Both torso ends must clear this to trust the torso at all. */
+/**
+ * A torso is trusted outright when both shoulders and both hips clear this, or when the shoulder and hip of one side
+ * do (a side-on player's far side routinely scores 0.4-0.5 while the near side is solid).
+ */
 export const TORSO_MIN_SCORE = 0.5;
+/**
+ * A pose with at least this many of the 12 joints from shoulders to ankles at BONE_MIN_SCORE or better is a confident
+ * detection as a whole (a person seen from behind or half hidden scores 0.2-0.4 on the shoulders and hips yet is
+ * plainly tracked). Its torso joints may then clear the lower CONSENSUS_FLOOR; limbs keep BONE_MIN_SCORE, and the
+ * length, box and shape checks still apply.
+ */
+const CONSENSUS_JOINTS = 8;
+const CONSENSUS_FLOOR = 0.2;
+const TORSO_JOINTS: ReadonlySet<number> = new Set([J.leftShoulder, J.rightShoulder, J.leftHip, J.rightHip]);
 /** A bone longer than this multiple of the track's own median length is a swap/jump glitch. */
 const REF_LENGTH_FACTOR = 1.6;
 /** Share of confident keypoints that must sit inside the detector box (whole-pose check a). */
@@ -50,10 +62,45 @@ function midpoint(kp: Float32Array, a: number, b: number): { x: number; y: numbe
   return { x, y, score: Math.min(kpScore(kp, a), kpScore(kp, b)) };
 }
 
-export function torsoLengthOf(kp: Float32Array): number {
+export interface TorsoEstimate {
+  /** How the torso was established: all four joints solid, one solid side, or all four above the lower floor. */
+  readonly trust: 'both' | 'side' | 'floor' | 'none';
+  /** Mid-shoulder to mid-hip distance (the confident side's shoulder to hip when only one side is solid), 0 if unknown. */
+  readonly length: number;
+}
+
+/** Shoulder-to-hip distance of one side and the weaker of its two joint scores. */
+function sideOf(kp: Float32Array, shoulder: number, hip: number): { length: number; score: number } {
+  const length = pairDistance(kp, shoulder, hip);
+  return { length, score: Number.isNaN(length) ? 0 : Math.min(kpScore(kp, shoulder), kpScore(kp, hip)) };
+}
+
+/**
+ * Establishes the torso. The mid-point of a pair is only as good as its weaker joint, so a side-on player whose far
+ * shoulder or hip sits at 0.5-0.6 used to lose the whole torso; one confident side is enough to measure it.
+ */
+export function estimateTorso(kp: Float32Array, floor: number = BONE_MIN_SCORE): TorsoEstimate {
   const sh = midpoint(kp, J.leftShoulder, J.rightShoulder);
   const hp = midpoint(kp, J.leftHip, J.rightHip);
-  return sh && hp ? Math.hypot(sh.x - hp.x, sh.y - hp.y) : 0;
+  const mid = sh && hp ? Math.hypot(sh.x - hp.x, sh.y - hp.y) : 0;
+  if (sh && hp && sh.score > TORSO_MIN_SCORE && hp.score > TORSO_MIN_SCORE) return { trust: 'both', length: mid };
+  const left = sideOf(kp, J.leftShoulder, J.leftHip);
+  const right = sideOf(kp, J.rightShoulder, J.rightHip);
+  const near = left.score >= right.score ? left : right;
+  if (near.score > TORSO_MIN_SCORE && near.length > 0) return { trust: 'side', length: near.length };
+  if (sh && hp && sh.score >= floor && hp.score >= floor) return { trust: 'floor', length: mid };
+  return { trust: 'none', length: mid };
+}
+
+/** Score a torso joint must reach for this pose: lower when most of the body is confidently detected. */
+export function torsoFloor(kp: Float32Array): number {
+  let confident = 0;
+  for (let j = J.leftShoulder; j <= 16; j++) if (kpScore(kp, j) >= BONE_MIN_SCORE) confident++;
+  return confident >= CONSENSUS_JOINTS ? CONSENSUS_FLOOR : BONE_MIN_SCORE;
+}
+
+export function torsoLengthOf(kp: Float32Array): number {
+  return estimateTorso(kp).length;
 }
 
 /** Vertical extent of keypoints above `minScore`, 0 when fewer than two qualify. */
@@ -70,7 +117,13 @@ function confidentYExtent(kp: Float32Array, minScore: number): number {
 }
 
 /** Whole-pose checks (05 §2.6 a, b, d). A pose failing any of them is demoted to a marker for the frame. */
-function wholePoseOk(kp: Float32Array, box: RenderPlayer['box'], torso: number, extent: number): boolean {
+function wholePoseOk(
+  kp: Float32Array,
+  box: RenderPlayer['box'],
+  torso: number,
+  extent: number,
+  floor: number,
+): boolean {
   if (box) {
     const [x0, y0, x1, y1] = box;
     const mx = (x1 - x0) * BOX_MARGIN;
@@ -91,7 +144,7 @@ function wholePoseOk(kp: Float32Array, box: RenderPlayer['box'], torso: number, 
       if (extent / boxHeight > APPARENT_HEIGHT_RANGE[1]) return false;
     }
   }
-  if (torso > 0) {
+  if (torso > 0 && kpScore(kp, J.leftShoulder) >= floor && kpScore(kp, J.rightShoulder) >= floor) {
     if (pairDistance(kp, J.leftShoulder, J.rightShoulder) / torso > SHOULDER_TORSO_MAX) return false;
   }
   return true;
@@ -106,10 +159,11 @@ export function assessPose(player: RenderPlayer): PoseAssessment {
   const boneOk = new Array<boolean>(BONE_STYLES.length).fill(false);
   if (!kp) return { level: 'marker', boneOk, torsoLength: 0, apparentHeight: 0 };
 
-  const sh = midpoint(kp, J.leftShoulder, J.rightShoulder);
-  const hp = midpoint(kp, J.leftHip, J.rightHip);
-  const torsoTrusted = sh !== null && hp !== null && sh.score > TORSO_MIN_SCORE && hp.score > TORSO_MIN_SCORE;
-  const torso = sh && hp ? Math.hypot(sh.x - hp.x, sh.y - hp.y) : 0;
+  const floor = torsoFloor(kp);
+  const jointFloor = (j: number) => (TORSO_JOINTS.has(j) ? floor : BONE_MIN_SCORE);
+  const estimate = estimateTorso(kp, floor);
+  const torsoTrusted = estimate.trust !== 'none';
+  const torso = estimate.length;
   const extent = confidentYExtent(kp, 0.3);
   const apparent = Math.max(extent, torso * TORSO_TO_HEIGHT);
 
@@ -117,7 +171,7 @@ export function assessPose(player: RenderPlayer): PoseAssessment {
     const style = BONE_STYLES[i];
     if (!style) continue;
     const { a, b } = style.def;
-    if (kpScore(kp, a) < BONE_MIN_SCORE || kpScore(kp, b) < BONE_MIN_SCORE) continue;
+    if (kpScore(kp, a) < jointFloor(a) || kpScore(kp, b) < jointFloor(b)) continue;
     const length = pairDistance(kp, a, b);
     if (Number.isNaN(length)) continue;
     if (torsoTrusted && torso > 4 && length > style.maxTorso * torso) continue;
@@ -135,7 +189,9 @@ export function assessPose(player: RenderPlayer): PoseAssessment {
     else if (kind === 'limb') limbs++;
   }
   let level: PoseAssessment['level'] = 'marker';
-  if (torsoTrusted && torsoBones >= 3 && wholePoseOk(kp, player.box, torso, extent)) {
+  // a solid side needs only its own flank; a torso known from the lower floor needs the usual three bones
+  const torsoBonesNeeded = estimate.trust === 'side' ? 1 : 3;
+  if (torsoTrusted && torsoBones >= torsoBonesNeeded && wholePoseOk(kp, player.box, torso, extent, floor)) {
     level = limbs >= 5 ? 'full' : limbs >= 1 ? 'partial' : 'torso';
   }
   if (level === 'marker') boneOk.fill(false);

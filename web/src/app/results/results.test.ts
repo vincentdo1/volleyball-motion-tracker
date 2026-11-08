@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import type { ClipMetadata } from '@/contracts/posetrack';
 import { BallSource, BallVisibility } from '@/contracts/posetrack';
 import { packFrames } from '@/contracts/posetrack-codec';
+import type { ProgressInfo } from '@/contracts/protocol';
 import { createFrameSource } from '@/render';
 import { syntheticScene } from '@/render/synthetic';
+import { useSessionStore } from '../stores/session';
 import { EtaSmoother, formatEta } from './eta';
 import { BallLane, computeLanes, LaneLevel } from './lanes';
 import { StreamingResults } from './streaming';
@@ -106,5 +109,68 @@ describe('EtaSmoother', () => {
     expect(formatEta(null)).toBe('');
     expect(formatEta(12.4)).toBe('~12 s left');
     expect(formatEta(65)).toBe('~1 min 5 s left');
+  });
+});
+
+describe('session chunks and progress (M2-18)', () => {
+  const session = () => useSessionStore.getState();
+  const begin = () => {
+    session().clear();
+    session().beginClip('clip.mp4', {} as ClipMetadata, scene.frames);
+  };
+  const progress = (framesDone: number, stage: ProgressInfo['stage'] = 'processing'): ProgressInfo => ({
+    stage,
+    doneUs: 0,
+    totalUs: 0,
+    framesDone,
+    framesTotal: 24,
+    fps: 10,
+    mediaRate: 1,
+    etaS: null,
+  });
+
+  it('starts the pill from the frames the engine skipped on a resumed run, not from chunks received', () => {
+    begin();
+    session().setProgress(progress(8), null);
+    expect(session().processedFrames).toBe(8);
+    session().setProgress(progress(12), null);
+    expect(session().processedFrames).toBe(12);
+    session().setProgress(progress(3), null);
+    expect(session().processedFrames).toBe(12);
+  });
+
+  it('ignores warm-up progress and clamps to the clip length', () => {
+    begin();
+    session().setProgress(progress(20, 'warmup'), null);
+    expect(session().processedFrames).toBe(0);
+    session().setProgress(progress(99), null);
+    expect(session().processedFrames).toBe(24);
+  });
+
+  it('applies a chunk once per seq and fills lanes from replayed chunks', () => {
+    begin();
+    session().addChunk(batchOf(0, 8), 0);
+    const revision = session().revision;
+    session().addChunk(batchOf(0, 8), 0);
+    expect(session().revision).toBe(revision);
+    session().addChunk(batchOf(8, 16), 1);
+    expect(session().processedFrames).toBe(16);
+    expect(session().lanes?.players.size).toBeGreaterThan(0);
+  });
+
+  it('accepts sequence numbers again when a new run starts', () => {
+    begin();
+    session().addChunk(batchOf(0, 8), 0);
+    session().beginRun();
+    const revision = session().revision;
+    session().addChunk(batchOf(0, 8), 0);
+    expect(session().revision).toBe(revision + 1);
+  });
+
+  it('never lowers the processed frames when an older chunk arrives after progress', () => {
+    begin();
+    session().setProgress(progress(16), null);
+    session().addChunk(batchOf(0, 8), 0);
+    expect(session().processedFrames).toBe(16);
   });
 });

@@ -7,12 +7,17 @@ const BLACK: Rgb = [0, 0, 0];
 export const PALETTE_SIZE = PALETTE_RGB.length;
 
 /**
- * Looks per hue: slot / 8 picks the variant. 0 is the plain hue, 1 adds a second ring, 2 adds the ring and a lighter
- * tint, 3 the ring and a darker shade. 8 hues x 4 variants = 32 looks before one repeats exactly.
+ * Looks per hue: slot / 8 picks the variant. 0 is the plain hue; every reuse changes the colour itself, not only the
+ * ring: 1 is a darker shade, 2 a lighter tint, 3 a deep shade (each also carries the second ring). The first reuse
+ * (slot 8..15, the 9th player) is the one a viewer meets most, so it must not look like the plain hue: it did when it
+ * only added a ring (gtu P1 and P9 were both cyan). 8 hues x 4 variants = 32 looks before one repeats exactly; the
+ * variants of one hue stay at least MIN_VARIANT_DISTANCE apart in OKLab.
  */
 export const VARIANT_COUNT = 4;
-const LIGHTER_TINT = 0.4;
-const DARKER_SHADE = 0.3;
+export const MIN_VARIANT_DISTANCE = 0.06;
+const DARKER_SHADE = 0.4;
+const LIGHTER_TINT = 0.6;
+const DEEP_SHADE = 0.65;
 
 /** Which variant of its hue a slot draws with (0 = plain). */
 export function colorVariant(slot: number): number {
@@ -23,10 +28,12 @@ export function colorVariant(slot: number): number {
 export function slotColor(slot: number): Rgb {
   const hue = PALETTE_RGB[((slot % PALETTE_SIZE) + PALETTE_SIZE) % PALETTE_SIZE] as Rgb;
   switch (colorVariant(slot)) {
+    case 1:
+      return mix(hue, BLACK, DARKER_SHADE);
     case 2:
       return mix(hue, WHITE, LIGHTER_TINT);
     case 3:
-      return mix(hue, BLACK, DARKER_SHADE);
+      return mix(hue, BLACK, DEEP_SHADE);
     default:
       return hue;
   }

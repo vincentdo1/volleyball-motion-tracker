@@ -7,8 +7,9 @@ import {
   type FrameTableColumns,
   type TrackColumns,
 } from '@/contracts/posetrack';
-import type { RenderBall, RenderFrame, RenderPlayer } from '@/contracts/renderer';
+import type { PoseHistory, PoseSample, RenderBall, RenderFrame, RenderPlayer } from '@/contracts/renderer';
 import { BONE_STYLES } from './bones';
+import { boxHeight, JOINT, jointSpeedPx, percentile } from './kinematics';
 
 /** Produces the renderer's input for a frame of the frame table. Results are keyed by PTS, never by time x fps. */
 export interface FrameSource {
@@ -153,6 +154,72 @@ export function ballAt(
   };
 }
 
+/** First index whose PTS is >= `value` (`sorted.length` when none). */
+function lowerBound(sorted: Float64Array, value: number): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((sorted[mid] as number) < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Wrist speeds in body-heights/s over a whole track (both wrists, every measurable sample). */
+function wristSpeedsOf(samples: readonly PoseSample[]): number[] {
+  const players = samples.map((s) => s.player);
+  const heights = players.map(boxHeight);
+  const speeds: number[] = [];
+  for (let i = 0; i < players.length; i++) {
+    const near: number[] = [];
+    for (let n = Math.max(0, i - REF_WINDOW); n <= Math.min(players.length - 1, i + REF_WINDOW); n++) {
+      if ((heights[n] as number) > 0) near.push(heights[n] as number);
+    }
+    const body = median(near);
+    if (body <= 0) continue;
+    for (const joint of [JOINT.leftWrist, JOINT.rightWrist]) {
+      const v = jointSpeedPx(samples, i, joint);
+      if (v !== null) speeds.push(v / body);
+    }
+  }
+  return speeds;
+}
+
+/** Pose history over a finished result: samples of any track by PTS range, and each track's wrist-speed scale. */
+export function createPoseHistory(
+  tracks: readonly TrackColumns[],
+  refFor: (track: TrackColumns) => Float32Array,
+): PoseHistory {
+  const byId = new Map(tracks.map((t) => [t.id, t]));
+  const p95 = new Map<number, number | null>();
+  return {
+    samples(trackId, fromUs, toUs) {
+      const track = byId.get(trackId);
+      if (!track) return [];
+      const refs = refFor(track);
+      const out: PoseSample[] = [];
+      for (let i = lowerBound(track.ptsUs, fromUs); i < track.ptsUs.length && (track.ptsUs[i] as number) <= toUs; i++) {
+        out.push({ ptsUs: track.ptsUs[i] as number, player: playerAt(track, i, refs) });
+      }
+      return out;
+    },
+    wristSpeedP95(trackId) {
+      if (p95.has(trackId)) return p95.get(trackId) ?? null;
+      const track = byId.get(trackId);
+      let value: number | null = null;
+      if (track && track.ptsUs.length > 0) {
+        const refs = refFor(track);
+        const all = Array.from(track.ptsUs, (ptsUs, i) => ({ ptsUs, player: playerAt(track, i, refs) }));
+        const speeds = wristSpeedsOf(all);
+        value = speeds.length >= 8 ? percentile(speeds, 0.95) : null;
+      }
+      p95.set(trackId, value);
+      return value;
+    },
+  };
+}
+
 export interface FinalFrameData {
   readonly frames: FrameTableColumns;
   readonly tracks: readonly TrackColumns[];
@@ -171,6 +238,7 @@ export function createFrameSource(data: FinalFrameData, options: FrameSourceOpti
     return ref;
   };
   const trailUs = (options.ballTrailSeconds ?? DEFAULT_BALL_TRAIL_S) * 1e6;
+  const history = createPoseHistory(data.tracks, refFor);
   return {
     frameAt(frameIndex) {
       const pts = data.frames.ptsUs[frameIndex];
@@ -185,6 +253,7 @@ export function createFrameSource(data: FinalFrameData, options: FrameSourceOpti
         frameIndex,
         players,
         ball: data.ball ? ballAt(data.ball, data.frames, frameIndex, trailUs) : null,
+        history,
       };
     },
   };

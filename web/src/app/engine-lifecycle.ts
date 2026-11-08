@@ -7,6 +7,8 @@ import type { EngineApi, EngineState, InitOptions, OpenedInfo, ReadyInfo, StartO
  */
 interface Lifecycle {
   ready: Promise<ReadyInfo> | null;
+  /** True once `ready` resolved; until then the attempt is still in flight whatever `engine.state` says. */
+  readySettled: boolean;
   started: Promise<void> | null;
   stopping: Promise<void> | null;
 }
@@ -19,25 +21,35 @@ const USABLE: readonly EngineState[] = ['ready', 'opening', 'opened', 'processin
 function lifecycleOf(engine: EngineApi): Lifecycle {
   let lifecycle = lifecycles.get(engine);
   if (!lifecycle) {
-    lifecycle = { ready: null, started: null, stopping: null };
+    lifecycle = { ready: null, readySettled: false, started: null, stopping: null };
     lifecycles.set(engine, lifecycle);
   }
   return lifecycle;
 }
 
 /**
- * Initialises the engine once. Concurrent callers share one promise; a failed attempt is forgotten so retrying works;
- * an engine that lost its worker (state `failed` or `idle` after it was ready) is initialised again.
+ * Initialises the engine once. Concurrent callers share one promise for as long as it has not settled: the client's
+ * `state` only changes when the worker posts its state event, so right after `init` it still reads `idle` and cannot
+ * tell a pending attempt from a lost one. A failed attempt is forgotten so retrying works; an engine that lost its
+ * worker (state `failed` or `idle` after the attempt resolved) is initialised again.
  */
 export function ensureReady(engine: EngineApi, options: InitOptions): Promise<ReadyInfo> {
   const lifecycle = lifecycleOf(engine);
   const { state } = engine;
-  if (lifecycle.ready && (state === 'initializing' || USABLE.includes(state))) return lifecycle.ready;
+  if (lifecycle.ready && (!lifecycle.readySettled || state === 'initializing' || USABLE.includes(state))) {
+    return lifecycle.ready;
+  }
   const attempt = engine.init(options);
   lifecycle.ready = attempt;
-  attempt.catch(() => {
-    if (lifecycle.ready === attempt) lifecycle.ready = null;
-  });
+  lifecycle.readySettled = false;
+  attempt.then(
+    () => {
+      if (lifecycle.ready === attempt) lifecycle.readySettled = true;
+    },
+    () => {
+      if (lifecycle.ready === attempt) lifecycle.ready = null;
+    },
+  );
   return attempt;
 }
 

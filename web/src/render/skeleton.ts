@@ -21,6 +21,7 @@ import {
   SIDE_LEFT,
   SIDE_RIGHT,
 } from './style';
+import { boneGradient, type VelocityColors } from './velocity';
 
 const CASING = hexToRgb(CASING_COLOR);
 const JOINT_FILL: Rgb = [245, 248, 252];
@@ -36,6 +37,8 @@ export interface PaintContext {
   readonly dpr: number;
   /** Collects glowing limbs, or null when glow is off. */
   readonly halos: HaloQueue | null;
+  /** Speed colours for the focus player (velocity mode); absent = identity colours. */
+  readonly velocity?: VelocityColors | null;
 }
 
 export function widthFor(pc: PaintContext, p: PreparedPlayer, role: PlayerRole): number {
@@ -66,13 +69,13 @@ function boneColor(side: 'L' | 'R' | 'C', base: Rgb, sideMode: boolean): Rgb {
   return side === 'L' ? mix(base, WHITE, LEFT_LIGHTEN) : base;
 }
 
-interface DrawnBone {
+export interface DrawnBone {
   readonly index: number;
   readonly alpha: number;
   readonly dashed: boolean;
 }
 
-function drawnBones(p: PreparedPlayer, alphaScale: number): DrawnBone[] {
+export function drawnBones(p: PreparedPlayer, alphaScale: number): DrawnBone[] {
   const out: DrawnBone[] = [];
   // torso first, then limbs and feet, so limbs overlap the torso outline
   const order = [...BODY_BONE_INDICES].sort(
@@ -103,6 +106,7 @@ export function paintSkeleton(pc: PaintContext, p: PreparedPlayer, role: PlayerR
   const sideMode = pc.options.colorMode === 'side' && role !== 'context';
   const casingPx = Math.max(style.casingMinPx * pc.dpr, W * style.casingExtra);
   const glowing = pc.halos !== null && role !== 'context';
+  const vel = role === 'focus' ? (pc.velocity ?? null) : null;
 
   ctx.save();
   ctx.lineCap = 'round';
@@ -133,7 +137,7 @@ export function paintSkeleton(pc: PaintContext, p: PreparedPlayer, role: PlayerR
     ctx.fill();
   }
 
-  paintHead(pc, p, W, base);
+  paintHead(pc, p, W, vel ? vel.headColor : base);
 
   // pass 2: colour fill, bright core line and glow source
   for (const bone of bones) {
@@ -141,7 +145,9 @@ export function paintSkeleton(pc: PaintContext, p: PreparedPlayer, role: PlayerR
     if (!s) continue;
     const [ax, ay] = point(p, s.def.a);
     const [bx, by] = point(p, s.def.b);
-    const color = boneColor(s.def.side, base, sideMode);
+    const velA = vel?.colorOf(s.def.a);
+    const velB = vel?.colorOf(s.def.b);
+    const color = velA && velB ? mix(velA, velB, 0.5) : boneColor(s.def.side, base, sideMode);
     if (bone.dashed) {
       // inferred, not measured: a thin dashed line (05 §2.6)
       ctx.setLineDash([W * 1.6, W * 1.2]);
@@ -158,14 +164,15 @@ export function paintSkeleton(pc: PaintContext, p: PreparedPlayer, role: PlayerR
     }
     ctx.beginPath();
     roundConePath(ctx, ax, ay, (W * s.r0) / 2, bx, by, (W * s.r1) / 2);
-    ctx.fillStyle = rgba(color, bone.alpha);
+    ctx.fillStyle =
+      (velA && velB ? boneGradient(ctx, ax, ay, bx, by, velA, velB, bone.alpha) : null) ?? rgba(color, bone.alpha);
     ctx.fill();
     if (style.coreAlpha > 0.02 && role !== 'context' && W > 3) {
       ctx.beginPath();
       ctx.moveTo(ax, ay);
       ctx.lineTo(bx, by);
       ctx.lineWidth = W * CORE_WIDTH * Math.min(s.r0, s.r1);
-      ctx.strokeStyle = rgba(mix(color, WHITE, CORE_MIX), style.coreAlpha * bone.alpha);
+      ctx.strokeStyle = rgba(vel ? WHITE : mix(color, WHITE, CORE_MIX), style.coreAlpha * bone.alpha);
       ctx.stroke();
     }
     if (glowing && pc.halos && s.def.kind !== 'torso') {

@@ -2,6 +2,7 @@ import { type PointerEvent, useEffect, useRef, useState } from 'react';
 import type { FrameTableColumns } from '@/contracts/posetrack';
 import { containTransform, type RenderOptions, type SkeletonRenderer } from '@/contracts/renderer';
 import { createSkeletonRenderer, type FrameSource } from '@/render';
+import { useViewStore } from '../stores/view';
 import { PlayerController } from './controller';
 
 export interface VideoStageProps {
@@ -45,6 +46,10 @@ export function VideoStage(props: VideoStageProps) {
       renderer,
       getSource: () => live.current.source,
       getOptions: () => live.current.options,
+      onStats: (stats) => {
+        const still = stats.focus?.ghosts === 'still';
+        if (useViewStore.getState().ghostsStill !== still) useViewStore.getState().setGhostsStill(still);
+      },
     });
     const fitOverlay = () => {
       const box = stage.getBoundingClientRect();

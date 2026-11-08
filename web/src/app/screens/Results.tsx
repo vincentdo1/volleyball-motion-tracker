@@ -124,10 +124,11 @@ export function Results({ engine, analyzing, onCancel, onNewClip }: ResultsProps
               }}
               label={`Video: ${clip.name}`}
             />
-            <div className="pointer-events-none absolute inset-x-3 bottom-3 flex justify-center">
-              <Hints ready={readyHints} done={doneHints} />
-            </div>
             {noPlayers && <EmptyResult onNewClip={onNewClip} />}
+          </div>
+          {/* a coach mark sits in its own strip under the stage: it must never cover the video */}
+          <div className="flex shrink-0 justify-center px-3 pt-2 empty:hidden" data-testid="hint-strip">
+            <Hints ready={readyHints} done={doneHints} />
           </div>
           <Transport
             controller={controller}
@@ -136,7 +137,7 @@ export function Results({ engine, analyzing, onCancel, onNewClip }: ResultsProps
           />
           <div
             data-testid="timeline-scroller"
-            className="max-h-[clamp(7rem,24dvh,16rem)] shrink-0 overflow-y-auto overscroll-contain border-border border-t px-3 pb-3 sm:px-4"
+            className="max-h-[clamp(7rem,24dvh,16rem)] min-h-14 shrink overflow-y-auto overscroll-contain border-border border-t px-3 pb-3 sm:px-4"
           >
             <Timeline
               controller={controller}

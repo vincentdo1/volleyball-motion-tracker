@@ -76,9 +76,10 @@ export const appMachine = setup({
       useSessionStore.getState().beginClip(input.file, opened.clip, opened.frameTable);
       return opened;
     }),
-    analyze: fromPromise(async ({ input }: { input: { engine: EngineApi; resume: boolean } }) =>
-      startRun(input.engine, { resume: input.resume }),
-    ),
+    analyze: fromPromise(async ({ input }: { input: { engine: EngineApi; resume: boolean } }) => {
+      useSessionStore.getState().beginRun();
+      return startRun(input.engine, { resume: input.resume });
+    }),
   },
   actions: {
     fail: assign(({ event }) => ({ error: asEngineError((event as { error?: unknown }).error) })),

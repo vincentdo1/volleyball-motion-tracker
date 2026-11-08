@@ -72,7 +72,10 @@ export function About() {
       <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6">
         <header>
           <h1 className="font-semibold text-[24px] tracking-tight">About this device</h1>
-          <p className="text-text-2">Device check. Videos are processed on this device and never uploaded.</p>
+          <p className="text-text-2">
+            Skeletal draws skeletons over every player and the ball in your volleyball clip. This is its device check:
+            videos are processed on this device and never uploaded.
+          </p>
         </header>
 
         {error && (

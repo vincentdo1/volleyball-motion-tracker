@@ -16,7 +16,7 @@ describe('assessPose', () => {
   });
 
   it('drops bones whose joints are below the confidence floor (gated bones are never drawn)', () => {
-    const a = assessPose(withJoints(makePlayer(1), ['left_wrist'], { score: 0.2 }));
+    const a = assessPose(withJoints(makePlayer(1), ['left_wrist'], { score: 0.1 }));
     expect(a.boneOk[boneIndex('left_forearm')]).toBe(false);
     expect(a.boneOk[boneIndex('left_upper_arm')]).toBe(true);
     expect(a.level).toBe('full');
@@ -53,7 +53,7 @@ describe('assessPose', () => {
       'right_ankle',
     ] as const;
     expect(assessPose(withJoints(makePlayer(1), armsAndLegs, { score: 0.1 })).level).toBe('torso');
-    expect(assessPose(withJoints(makePlayer(1), ['left_hip'], { score: 0.1 })).level).toBe('marker');
+    expect(assessPose(withJoints(makePlayer(1), ['left_hip', 'right_hip'], { score: 0.1 })).level).toBe('marker');
     expect(assessPose({ ...makePlayer(1), keypoints: null, kpFlags: null }).level).toBe('marker');
   });
 
@@ -102,6 +102,58 @@ describe('assessPose', () => {
   it('demotes a pose whose apparent height disagrees with its box', () => {
     const p = makePlayer(1);
     expect(assessPose({ ...p, box: [100, 100, 160, 600] }).level).toBe('marker');
+  });
+});
+
+describe('torso trust (M2-17)', () => {
+  const FAR = ['right_shoulder', 'right_hip'] as const;
+
+  it('trusts a side-on pose through its confident near side when the far side is weaker', () => {
+    // the beach P3 pattern: near shoulder/hip 0.6-0.7, far shoulder 0.55 and far hip 0.45
+    const p = withJoints(withJoints(makePlayer(1), ['right_shoulder'], { score: 0.55 }), ['right_hip'], {
+      score: 0.45,
+    });
+    const a = assessPose(p);
+    expect(a.level).toBe('full');
+    expect(a.torsoLength).toBeGreaterThan(0);
+  });
+
+  it('measures the torso from the near side when the far side is missing', () => {
+    const whole = assessPose(makePlayer(1)).torsoLength;
+    const a = assessPose(withJoints(makePlayer(1), FAR, { score: 0.1 }));
+    expect(a.level).not.toBe('marker');
+    expect(a.boneOk[boneIndex('left_flank')]).toBe(true);
+    expect(a.torsoLength).toBeGreaterThan(whole * 0.8);
+    expect(a.torsoLength).toBeLessThan(whole * 1.2);
+  });
+
+  it('trusts a torso whose four joints all sit between the lower and the usual floor', () => {
+    const p = withJoints(makePlayer(1), ['left_shoulder', 'right_shoulder', 'left_hip', 'right_hip'], { score: 0.4 });
+    expect(assessPose(p).level).toBe('full');
+  });
+
+  it('lets a pose that is confident as a whole keep hips that score 0.25 (seen from behind)', () => {
+    const p = withJoints(makePlayer(1), ['left_hip', 'right_hip'], { score: 0.25 });
+    expect(assessPose(p).level).not.toBe('marker');
+  });
+
+  it('keeps a weak torso a marker when the rest of the pose is not confident either', () => {
+    // a net post or a ghost detection: nothing above the floor, so no skeleton however the torso lines up
+    const joints = Object.keys(HALPE26_INDEX) as (keyof typeof HALPE26_INDEX)[];
+    const p = withJoints(makePlayer(1), joints, { score: 0.3 });
+    expect(assessPose(p).level).toBe('marker');
+    // hips below even the lower floor are no torso whatever the limbs score
+    const hips = withJoints(makePlayer(1), ['left_hip', 'right_hip'], { score: 0.1 });
+    expect(assessPose(hips).level).toBe('marker');
+  });
+
+  it('still demotes a side-trusted pose whose joints leave the detector box', () => {
+    const p = withJoints(
+      makePlayer(1),
+      ['left_shoulder', 'left_elbow', 'left_wrist', 'left_hip', 'left_knee', 'left_ankle'],
+      { dx: -400 },
+    );
+    expect(assessPose(withJoints(p, FAR, { score: 0.4 })).level).toBe('marker');
   });
 });
 

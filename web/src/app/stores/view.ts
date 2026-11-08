@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { create } from 'zustand';
 import { DEFAULT_RENDER_OPTIONS, type RenderOptions } from '@/contracts/renderer';
+import { useThemeStore } from '@/ui/theme';
 
 export type PanelTab = 'players' | 'layers' | 'data';
 
@@ -13,12 +14,24 @@ export interface ViewState {
   readonly showChips: boolean;
   readonly showBall: boolean;
   readonly showTrails: boolean;
+  /** Focus-player layers (they need a focus player). */
+  readonly showFocusTrails: boolean;
+  readonly showGhosts: boolean;
+  readonly showAngles: boolean;
+  readonly velocityColor: boolean;
+  /** The last drawn frame skipped the ghosts because the focus player barely moved. */
+  readonly ghostsStill: boolean;
   readonly glow: number;
   readonly panelTab: PanelTab;
   setFocus(trackId: number | null): void;
   toggleHidden(trackId: number): void;
   toggleSolo(trackId: number): void;
-  setLayer(layer: 'showJoints' | 'showChips' | 'showBall' | 'showTrails', on: boolean): void;
+  setLayer(
+    layer: 'showJoints' | 'showChips' | 'showBall' | 'showTrails' | 'showFocusTrails' | 'showGhosts' | 'showAngles',
+    on: boolean,
+  ): void;
+  setVelocityColor(on: boolean): void;
+  setGhostsStill(still: boolean): void;
   setColorMode(mode: RenderOptions['colorMode']): void;
   setGlow(glow: number): void;
   setPanelTab(tab: PanelTab): void;
@@ -34,6 +47,11 @@ const INITIAL = {
   showChips: DEFAULT_RENDER_OPTIONS.showChips,
   showBall: DEFAULT_RENDER_OPTIONS.showBall,
   showTrails: DEFAULT_RENDER_OPTIONS.showTrails,
+  showFocusTrails: true,
+  showGhosts: false,
+  showAngles: false,
+  velocityColor: false,
+  ghostsStill: false,
   glow: DEFAULT_RENDER_OPTIONS.glow,
   panelTab: 'players' as PanelTab,
 };
@@ -55,6 +73,8 @@ export const useViewStore = create<ViewState>((set) => ({
       focusTrackId: s.soloTrackId === id ? s.focusTrackId : id,
     })),
   setLayer: (layer, on) => set({ [layer]: on }),
+  setVelocityColor: (velocityColor) => set({ velocityColor }),
+  setGhostsStill: (ghostsStill) => set({ ghostsStill }),
   setColorMode: (colorMode) => set({ colorMode }),
   setGlow: (glow) => set({ glow }),
   setPanelTab: (panelTab) => set({ panelTab }),
@@ -66,8 +86,22 @@ export const useViewStore = create<ViewState>((set) => ({
  * referentially stable until something that affects the picture changes.
  */
 export function useRenderOptions(allTrackIds: readonly number[]): RenderOptions {
-  const { focusTrackId, hiddenTrackIds, soloTrackId, colorMode, showJoints, showChips, showBall, showTrails, glow } =
-    useViewStore();
+  const {
+    focusTrackId,
+    hiddenTrackIds,
+    soloTrackId,
+    colorMode,
+    showJoints,
+    showChips,
+    showBall,
+    showTrails,
+    showFocusTrails,
+    showGhosts,
+    showAngles,
+    velocityColor,
+    glow,
+  } = useViewStore();
+  const reducedMotion = useThemeStore((s) => s.reducedMotion);
   // keyed by the ids themselves: a fresh array with the same ids must not rebuild the options
   const idKey = allTrackIds.join(',');
   const trackIds = useMemo(() => (idKey === '' ? [] : idKey.split(',').map(Number)), [idKey]);
@@ -81,8 +115,29 @@ export function useRenderOptions(allTrackIds: readonly number[]): RenderOptions 
       showChips,
       showBall,
       showTrails,
+      showFocusTrails,
+      showGhosts,
+      showAngles,
+      velocityColor,
+      reducedMotion,
       glow,
     }),
-    [focusTrackId, hiddenTrackIds, soloTrackId, trackIds, colorMode, showJoints, showChips, showBall, showTrails, glow],
+    [
+      focusTrackId,
+      hiddenTrackIds,
+      soloTrackId,
+      trackIds,
+      colorMode,
+      showJoints,
+      showChips,
+      showBall,
+      showTrails,
+      showFocusTrails,
+      showGhosts,
+      showAngles,
+      velocityColor,
+      reducedMotion,
+      glow,
+    ],
   );
 }

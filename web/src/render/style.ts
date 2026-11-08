@@ -12,6 +12,8 @@ export interface FrameStyle {
   /** 0..1 glow amount after the bright-background reduction. */
   readonly glowAmount: number;
   readonly contextAlpha: number;
+  /** 0..1: how bright the background is (sunlit sand, white walls). Overlay layers draw heavier casings with it. */
+  readonly bright: number;
 }
 
 export const FOCUS_WIDTH = 1.12;
@@ -41,5 +43,6 @@ export function frameStyle(options: RenderOptions): FrameStyle {
     coreAlpha: 0.85 * (1 - bright),
     glowAmount: options.glow * (1 - 0.7 * smoothstep(0.35, 0.75, luma)) * (1 - bright),
     contextAlpha: options.contextAlpha,
+    bright,
   };
 }

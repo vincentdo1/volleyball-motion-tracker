@@ -25,7 +25,10 @@ export interface SessionState {
   /** Frames the engine has analysed so far; equals the frame count when done. */
   readonly processedFrames: number;
   beginClip(file: File | string, clip: ClipMetadata, frameTable: FrameTableColumns): void;
-  addChunk(batch: PackedFrameBatch): void;
+  /** Applies a chunk once per `seq` (a replayed chunk, or one re-sent after a recovery, is ignored). */
+  addChunk(batch: PackedFrameBatch, seq?: number): void;
+  /** A new run starts: its chunk sequence numbers begin again, so forget which ones were applied. */
+  beginRun(): void;
   setProgress(progress: ProgressInfo, etaS: number | null): void;
   setFinal(result: FinalResult): void;
   addWarning(warning: EngineWarning): void;
@@ -35,6 +38,7 @@ export interface SessionState {
 }
 
 let stream: StreamingResults | null = null;
+const appliedSeqs = new Set<number>();
 
 function revoke(url: string | null): void {
   if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
@@ -60,6 +64,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   ...EMPTY,
   beginClip(file, clip, frameTable) {
     revoke(get().videoUrl);
+    appliedSeqs.clear();
     stream = new StreamingResults(frameTable);
     set({
       ...EMPTY,
@@ -70,16 +75,26 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       lanes: stream.lanes,
     });
   },
-  addChunk(batch) {
+  addChunk(batch, seq) {
     if (!stream) return;
+    if (seq !== undefined) {
+      if (appliedSeqs.has(seq)) return;
+      appliedSeqs.add(seq);
+    }
     stream.append(batch);
     set((s) => ({
       lanes: stream?.lanes ?? s.lanes,
       revision: s.revision + 1,
-      processedFrames: stream?.processedFrames ?? 0,
+      processedFrames: Math.max(s.processedFrames, stream?.processedFrames ?? 0),
     }));
   },
-  setProgress: (progress, etaS) => set({ progress, etaS }),
+  beginRun: () => appliedSeqs.clear(),
+  setProgress(progress, etaS) {
+    // the engine counts the frames it skipped on a resumed run too, so the pill does not start at 0 %
+    const total = get().frameTable?.ptsUs.length ?? 0;
+    const engineDone = progress.stage === 'processing' ? Math.min(progress.framesDone, total) : 0;
+    set((s) => ({ progress, etaS, processedFrames: Math.max(s.processedFrames, engineDone) }));
+  },
   setFinal(result) {
     const source = createFrameSource(result, {});
     set((s) => ({
@@ -94,6 +109,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   endClip: () => set({ kept: true, progress: null, etaS: null }),
   clear() {
     revoke(get().videoUrl);
+    appliedSeqs.clear();
     stream = null;
     set({ ...EMPTY });
   },

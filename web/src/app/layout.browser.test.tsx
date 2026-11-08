@@ -43,6 +43,9 @@ describe('results layout with a crowd', () => {
 
       const stage = screen.getByTestId('video-stage').getBoundingClientRect();
       expect(stage.height).toBeGreaterThanOrEqual(height * 0.33);
+      // the first-run hint card is shown (hints were reset) and never covers the video
+      const hint = (await screen.findByTestId('hint')).getBoundingClientRect();
+      expect(hint.top).toBeGreaterThanOrEqual(stage.bottom - 0.5);
       const scroller = screen.getByTestId('timeline-scroller');
       expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight);
       expect(document.documentElement.scrollHeight).toBeLessThanOrEqual(height);
