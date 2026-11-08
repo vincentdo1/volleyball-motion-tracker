@@ -1,4 +1,4 @@
-# Hosting (Cloudflare Workers static assets + R2)
+# Hosting Skeletal (Cloudflare Workers static assets + R2)
 
 Nothing here deploys automatically. `deploy/cloudflare/` is ready for when the owner wants a public URL.
 
@@ -6,8 +6,8 @@ Nothing here deploys automatically. `deploy/cloudflare/` is ready for when the o
 1. A Cloudflare account (the free plan is enough).
 2. R2 enabled on the account (Dashboard > R2). R2 has a free allowance (10 GB storage, 10 M reads/month) and no
    egress fees; enabling it may ask for a payment method.
-3. One R2 bucket named `volleyball-motion-tracker-assets` (or change `bucket_name` in `cloudflare/wrangler.jsonc`).
-4. Optional: a custom domain on Cloudflare. Without one the app is served at `https://volleyball-motion-tracker.<account>.workers.dev`.
+3. One R2 bucket named `skeletal-assets` (or change `bucket_name` in `cloudflare/wrangler.jsonc`).
+4. Optional: a custom domain on Cloudflare. Without one the app is served at `https://skeletal.<account>.workers.dev` (the Worker `name`).
 
 ## How requests are served
 | Path | Served by | Why |
@@ -26,7 +26,7 @@ npm ci && npm run fetch-models && npm run build      # dist/ (+ dist/ort/1.31.1,
 npx wrangler login                                   # once, opens the browser
 
 # Upload the onnxruntime runtime files and the models to R2 (only when they change)
-B=volleyball-motion-tracker-assets
+B=skeletal-assets
 for f in dist/ort/1.31.1/*; do
   case "$f" in *.wasm) t=application/wasm;; *) t="text/javascript; charset=utf-8";; esac
   npx wrangler r2 object put "$B/ort/1.31.1/$(basename "$f")" --file "$f" --content-type "$t" --remote
@@ -40,8 +40,13 @@ npx wrangler deploy --config ../deploy/cloudflare/wrangler.jsonc
 For a custom domain, add `"routes": [{ "pattern": "app.example.com", "custom_domain": true }]` to `wrangler.jsonc`.
 
 ## Local check without an account
-`npm run build && npm run cf:dev` runs the Worker locally (wrangler + workerd) against a local R2 simulation. Seed it
-with the same `wrangler r2 object put` commands using `--local` instead of `--remote`.
+The Worker runs locally (wrangler + workerd) against a local R2 simulation kept in `cloudflare/.wrangler/state`
+(git-ignored). From `web/`:
+```sh
+npm run build && npm run cf:seed-local     # copy dist/ort and dist/models into the local bucket
+npm run cf:dev                             # http://127.0.0.1:8787
+E2E_TARGET=preview E2E_SERVER=cf PORT=8787 npm run test:e2e   # the end-to-end suites against the Worker
+```
 
 ## Other hosts
 Any host works if it can (a) send the four headers above on every response and (b) serve files larger than 25 MiB

@@ -1,8 +1,8 @@
-# Web app architecture
+# Skeletal: web app architecture
 
-The web app (`web/`) turns an uploaded volleyball clip into tracked, smoothed 2D skeletons for every person on screen
-plus the ball, entirely in the browser. Nothing is uploaded; there is no server compute. The phase-one Python package
-(`src/volleyball_tracker/`) remains the reference for the domain logic.
+Skeletal, the web app in `web/`, turns an uploaded volleyball clip into tracked, smoothed 2D skeletons for every person
+on screen plus the ball, entirely in the browser. Nothing is uploaded; there is no server compute. The phase-one Python
+package (`src/volleyball_tracker/`) remains the reference for the domain logic.
 
 ## Pipeline
 ```
@@ -19,6 +19,9 @@ File ──> engine worker ─────────────────�
 - Rendering: Canvas2D overlay on a native `<video>`, synchronised with `requestVideoFrameCallback`.
 - Export: MP4 with the overlay (WebCodecs H.264, audio copied), PNG frame, JSON (PoseTrack v1), CSV.
 - Results and progress are stored in the browser (OPFS) so an interrupted run can resume.
+- The main thread supervises the worker. Silence is measured in awake time, so a sleeping laptop or a frozen tab is not
+  a hang. A stalled run restarts and resumes, and a run that stalls again steps down one device tier. A GPU that cannot
+  run the models steps down to the CPU tier with a notice; the user only sees plain-language messages.
 
 ## Device tiers
 | Tier | When | Detector -> pose |

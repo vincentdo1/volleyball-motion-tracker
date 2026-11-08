@@ -3,7 +3,8 @@
 | Script | What it does |
 |---|---|
 | `fetch-models.mjs` (`npm run fetch-models`) | Reads `../models.lock.json`, downloads missing models into `~/.cache/volleyball-motion-tracker/models` (override with `VBT_MODEL_CACHE`), verifies SHA-256, updates `SHA256SUMS` there and symlinks the shipped files into `public/models/<id>.<sha12>.onnx` (gitignored). Flags: `--check`, `--all` (also reference files), `--inspect` (compare model I/O with the lock using onnxruntime-node), `--rebuild-derived` (re-run fp16 conversions and compare hashes), `--copy`. |
-| `check-dist.mjs` (runs after `npm run build`) | Fails if any static asset in `dist/` is over 25 MiB outside `ort/` and `models/` (Cloudflare's per-asset limit), or if `_headers`, `.assetsignore` or the ORT wasm are missing. |
+| `check-dist.mjs` (runs after `npm run build`) | Fails if any static asset in `dist/` is over 25 MiB outside `ort/` and `models/` (Cloudflare's per-asset limit), if `_headers`, `.assetsignore` or the ORT wasm are missing, or if the engine worker's entry chunk exports anything or is imported by another chunk (WebKit would evaluate it twice). |
+| `cf-seed-local.mjs` (`npm run cf:seed-local`) | Copies `dist/ort/` and `dist/models/` into the local R2 simulation that `npm run cf:dev` serves (`deploy/cloudflare/.wrangler/state`), with the keys and content types of the remote upload. Run `npm run build` first. |
 | `convert_fp16.py` | Converts an fp32 ONNX model to fp16 weights/compute with float32 I/O, keeping listed nodes in fp32. |
 
 ## Reproducing the fp16 RTMPose builds
