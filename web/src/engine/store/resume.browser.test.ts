@@ -107,8 +107,20 @@ describe('persistence and resume', () => {
     await done;
 
     expect(warnings.map((w) => w.warning.code)).toContain('resumed');
-    expect(resumedChunks[0]?.batch.ptsUs[0]).toBeGreaterThanOrEqual(20_000_000);
-    expect(resumedChunks.reduce((n, c) => n + c.batch.count, 0)).toBeLessThan(991 - 500);
+    const replayed = resumedChunks.filter((c) => c.replayed);
+    const live = resumedChunks.filter((c) => !c.replayed);
+    expect(live[0]?.batch.ptsUs[0]).toBeGreaterThanOrEqual(20_000_000);
+    expect(live.reduce((n, c) => n + c.batch.count, 0)).toBeLessThan(991 - 500);
+    // The stored part comes back first, with the seq it had the first time, and the run carries on after it.
+    expect(replayed.length).toBeGreaterThan(30);
+    expect(resumedChunks.slice(0, replayed.length)).toEqual(replayed);
+    expect(resumedChunks.map((c) => c.seq)).toEqual(resumedChunks.map((_, i) => i));
+    expect(replayed.every((c) => (c.batch.ptsUs.at(-1) ?? 0) < 20_000_000)).toBe(true);
+    for (const chunk of replayed) {
+      const original = firstChunks[chunk.seq];
+      expect(Array.from(chunk.batch.ptsUs)).toEqual(Array.from(original?.batch.ptsUs ?? []));
+      expect(Array.from(chunk.batch.keypoints)).toEqual(Array.from(original?.batch.keypoints ?? []));
+    }
     const result = finals[0]?.result;
     expect(result).toBeDefined();
     if (result) expect(plain(result)).toEqual(uninterrupted);

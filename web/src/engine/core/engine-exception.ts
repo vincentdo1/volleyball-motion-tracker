@@ -29,6 +29,18 @@ export function fail(
   return new EngineException(engineError(code, message, detail));
 }
 
+/**
+ * A plain object holding only the `EngineError` fields. Structured clone keeps just the name and message of an
+ * `Error` instance, so every error that crosses the worker boundary must be one of these, never an `Error` subclass
+ * that merely implements `EngineError` (an `InferenceError` posted as is reaches the client without its `code`).
+ */
+export function plainEngineError(error: EngineError): EngineError {
+  const { code, message, recoverable, action, detail } = error;
+  return detail === undefined
+    ? { code, message, recoverable, action }
+    : { code, message, recoverable, action, detail: { ...detail } };
+}
+
 function messageOf(error: unknown): string {
   if (error instanceof Error) return error.message;
   return typeof error === 'string' ? error : 'unknown error';
@@ -37,7 +49,7 @@ function messageOf(error: unknown): string {
 /** Maps anything thrown inside the engine to a taxonomy code (plan §3.13). */
 export function toEngineError(error: unknown, fallback: EngineErrorCode = 'internal'): EngineError {
   if (error instanceof EngineException) return error.engineError;
-  if (isEngineError(error)) return error;
+  if (isEngineError(error)) return plainEngineError(error);
   const message = messageOf(error);
   if (error instanceof DOMException) {
     if (error.name === 'QuotaExceededError') return engineError('storage-quota', message);

@@ -1,10 +1,7 @@
 import type { SkeletonRendererFactory } from '@/contracts/renderer';
-import { createBasicRenderer } from './basic-renderer';
+import { createSkeletonRenderer } from '@/render';
 
-/**
- * The renderer the export worker draws with. It is worker-safe by contract (`renderer.ts`), so the UI's renderer
- * from `web/src/render/` replaces the basic one here at integration time.
- */
+/** The renderer the export worker draws with: the one of the results view (`render/` is worker-safe by contract). */
 export function loadRendererFactory(): SkeletonRendererFactory {
-  return createBasicRenderer;
+  return createSkeletonRenderer;
 }

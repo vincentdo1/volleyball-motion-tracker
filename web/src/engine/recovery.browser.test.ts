@@ -271,6 +271,44 @@ describe('WebGPU inference failure', () => {
     expect(readies.map((r) => r.backend)).toEqual(['webgpu', 'wasm']);
     expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
   }, 60_000);
+  it('steps down when the ML module throws an Error subclass that implements EngineError (Firefox, M2-10)', async () => {
+    const failAtPtsUs = await ptsOfFrame(60);
+    engine = createStubEngine((generation) =>
+      generation === 0 ? { ml: { failAtPtsUs, failAsErrorSubclass: true } } : {},
+    );
+    const errors = record(engine, 'error');
+    const warnings = record(engine, 'warning');
+    const readies = record(engine, 'ready');
+    const finals = record(engine, 'final');
+    await engine.init({ tierOverride: 'webgpu-default' });
+    await engine.open(await fixtureFile(CLIP));
+    const done = until(engine, 'final');
+    await engine.start();
+    await done;
+    expect(errors).toEqual([]);
+    const notice = warnings.find((w) => w.warning.detail?.reason === 'gpu-inference-failed')?.warning;
+    expect(notice?.code).toBe('slow-mode');
+    expect(notice?.message).not.toMatch(/Ort|Shader|stub/);
+    expect(readies.map((r) => r.backend)).toEqual(['webgpu', 'wasm']);
+    expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
+  }, 60_000);
+  it('falls back to the CPU tier when the first (warm-up) inference fails on WebGPU, with the typed notice', async () => {
+    engine = createStubEngine({ ml: { failWarmupOnWebgpu: true } });
+    const errors = record(engine, 'error');
+    const warnings = record(engine, 'warning');
+    const finals = record(engine, 'final');
+    const ready = await engine.init({ tierOverride: 'webgpu-default' });
+    expect(ready.backend).toBe('wasm');
+    await engine.open(await fixtureFile(CLIP));
+    const done = until(engine, 'final');
+    await engine.start();
+    await done;
+    expect(errors).toEqual([]);
+    const notice = warnings.find((w) => w.warning.detail?.reason === 'gpu-inference-failed')?.warning;
+    expect(notice?.code).toBe('slow-mode');
+    expect(notice?.message).not.toMatch(/Ort|Shader|stub|runtime/);
+    expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
+  }, 60_000);
 });
 
 describe('GPU loss', () => {
@@ -279,6 +317,7 @@ describe('GPU loss', () => {
     engine = createStubEngine((generation) => (generation === 0 ? { ml: { loseDeviceAtPtsUs } } : {}));
     const errors = record(engine, 'error');
     const warnings = record(engine, 'warning');
+    const chunks = record(engine, 'chunk');
     const finals = record(engine, 'final');
     await engine.init({ tierOverride: 'webgpu-default' });
     await engine.open(await fixtureFile(CLIP));
@@ -288,6 +327,11 @@ describe('GPU loss', () => {
     expect(errors).toEqual([]);
     expect(warnings).toEqual([]);
     expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
+    // A client that keeps the first copy of every seq (the UI does) holds each frame exactly once.
+    const bySeq = new Map<number, number>();
+    for (const c of chunks) if (!bySeq.has(c.seq)) bySeq.set(c.seq, c.batch.count);
+    expect([...bySeq.values()].reduce((a, b) => a + b, 0)).toBe(181);
+    expect([...bySeq.keys()].sort((a, b) => a - b)).toEqual([...bySeq.keys()].map((_, i) => i));
   }, 60_000);
 
   it('drops to a CPU tier with a slow-mode warning after two losses within a minute', async () => {

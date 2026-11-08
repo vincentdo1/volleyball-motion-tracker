@@ -13,7 +13,7 @@ import {
   type StartOptions,
 } from '@/contracts/protocol';
 import { detectCapabilities } from '../capabilities/detect';
-import { selectTier } from '../capabilities/tier';
+import { cpuTierBelow, selectTier } from '../capabilities/tier';
 import { ExportManager, isCancellation } from '../export/export-manager';
 import { type OpenedClip, openClip } from '../ingest/open-clip';
 import { MAX_IN_FLIGHT } from '../process/frame-loop';
@@ -22,7 +22,7 @@ import { makePlan } from '../process/schedule';
 import { replayStoredFrames, resumeTracker } from '../process/tracker-resume';
 import { listSessions, MAX_SESSIONS } from '../store/session-index';
 import { type Manifest, openSessionStore, pruneSessions, type SessionStore } from '../store/session-store';
-import { fail, toEngineError } from './engine-exception';
+import { fail, plainEngineError, toEngineError } from './engine-exception';
 import { FrameLedger } from './frame-ledger';
 import type { PreparedRuntime, RuntimeProvider } from './runtime-provider';
 import { canonicalJson, mergeSettings, settingsHash } from './settings';
@@ -73,7 +73,7 @@ export class EngineCore {
 
   constructor(
     private readonly deps: EngineDeps,
-    private readonly post: (event: EngineEvent) => void,
+    private readonly postRaw: (event: EngineEvent) => void,
   ) {
     this.now = deps.now ?? (() => performance.now());
     this.machine = new StateMachine((state, previous) => this.post({ type: 'state', state, previous }));
@@ -87,6 +87,14 @@ export class EngineCore {
   /** Open decoded frames right now (0 whenever no run is active). */
   get openVideoFrames(): number {
     return this.ledger.open;
+  }
+
+  /** The only way out of the worker: errors are normalised to plain objects (see `plainEngineError`). */
+  private post(event: EngineEvent): void {
+    if (event.type === 'error') this.postRaw({ type: 'error', error: plainEngineError(event.error) });
+    else if (event.type === 'reply' && !event.ok) {
+      this.postRaw({ type: 'reply', requestId: event.requestId, ok: false, error: plainEngineError(event.error) });
+    } else this.postRaw(event);
   }
 
   handle(command: EngineCommand): void {
@@ -180,8 +188,27 @@ export class EngineCore {
     if (!tierId) throw fail('unsupported-browser', caps.reasons.join('; ') || 'No usable processing path.');
     this.ml ??= await this.deps.loadMl();
     let loaded = await this.loadTier(tierId, caps, options);
-    const warmup = await loaded.pipeline.warmup();
-    if (!options.tierOverride) {
+    let warmup: Awaited<ReturnType<FramePipeline['warmup']>>;
+    let steppedDown = false;
+    try {
+      warmup = await loaded.pipeline.warmup();
+    } catch (error) {
+      // The first inference is where a browser's WebGPU shaders compile, and where a device that cannot run them
+      // fails (Firefox: the 'Pad' shader). Carry on at once on the CPU rather than ask the person to retry.
+      const failed = toEngineError(error, 'inference-failed');
+      await this.releaseLoaded(loaded).catch(() => undefined);
+      if (failed.code !== 'inference-failed' || DEVICE_TIERS[tierId].backend !== 'webgpu') throw failed;
+      const cpuTier = cpuTierBelow(tierId, caps.crossOriginIsolated);
+      this.warn({
+        code: 'slow-mode',
+        message: 'The graphics card could not run the analysis, so it continues on the processor, which is slower.',
+        detail: { tier: cpuTier, reason: 'gpu-inference-failed' },
+      });
+      loaded = await this.loadTier(cpuTier, caps, options);
+      steppedDown = true;
+      warmup = await loaded.pipeline.warmup();
+    }
+    if (!options.tierOverride && !steppedDown) {
       const refined = selectTier(caps, {
         qualityOptIn: options.qualityOptIn ?? false,
         benchmarkMsPerFrame: warmup.totalMs,

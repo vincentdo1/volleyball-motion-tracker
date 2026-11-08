@@ -93,3 +93,13 @@ export function decodeBatches(bytes: Uint8Array): PackedFrameBatch[] {
   }
   return batches;
 }
+
+/**
+ * A batch whose arrays own their memory. Decoded batches are views on the one buffer of their chunk file; posting
+ * one with a transfer list would detach that buffer under every other batch (and under the store's own copy).
+ */
+export function detachedCopy(batch: PackedFrameBatch): PackedFrameBatch {
+  const copy: Record<string, unknown> = { stage: batch.stage, count: batch.count };
+  for (const field of FIELDS) copy[field.name] = batch[field.name].slice();
+  return copy as unknown as PackedFrameBatch;
+}

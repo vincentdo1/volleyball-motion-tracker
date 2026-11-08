@@ -1,12 +1,13 @@
 import type { EngineError } from '@/contracts/errors';
 import type { ProcessingSettings } from '@/contracts/params';
 import type { FramePipeline, MlModule, OnlineTracker } from '@/contracts/pipeline';
-import type { FinalResult } from '@/contracts/posetrack';
+import type { FinalResult, PackedFrameBatch } from '@/contracts/posetrack';
 import { encodePoseTrack } from '@/contracts/posetrack-codec';
 import type { EngineEvent, EngineState } from '@/contracts/protocol';
 import { EngineException, toEngineError } from '../core/engine-exception';
 import type { FrameLedger } from '../core/frame-ledger';
 import type { OpenedClip } from '../ingest/open-clip';
+import { decodeBatches, detachedCopy } from '../store/chunk-codec';
 import { ChunkWriter } from '../store/chunk-writer';
 import { recordSession } from '../store/session-index';
 import type { Manifest, SessionStore } from '../store/session-store';
@@ -146,9 +147,36 @@ export class ProcessingRun {
     } catch (error) {
       throw new EngineException(toEngineError(error, 'storage-unavailable'));
     }
+    await this.emitChunk(batch, false);
+  }
+
+  /** Emits one batch under the next seq once the ack window has room; false when the run was cancelled meanwhile. */
+  private async emitChunk(batch: Parameters<ChunkWriter['write']>[0], replayed: boolean): Promise<boolean> {
     const seq = this.seq++;
-    if (!(await this.ack.reserve(seq))) return;
-    this.init.host.emit({ type: 'chunk', seq, batch });
+    if (!(await this.ack.reserve(seq))) return false;
+    this.init.host.emit(replayed ? { type: 'chunk', seq, batch, replayed } : { type: 'chunk', seq, batch });
+    return true;
+  }
+
+  /**
+   * Re-emits the batches saved by an earlier run, in order and through the normal ack window, so the live view
+   * covers the part that is already analysed. Their seq is their position in the stream, which is what the earlier
+   * run gave them; the run then carries on from the next one. False when cancelled meanwhile.
+   */
+  private async replayStored(): Promise<boolean> {
+    const { store, manifest } = this.init;
+    for (const chunk of manifest.chunks) {
+      let batches: PackedFrameBatch[];
+      try {
+        batches = decodeBatches(await store.readChunk(chunk.startUs));
+      } catch (error) {
+        throw new EngineException(toEngineError(error, 'storage-unavailable'));
+      }
+      for (const batch of batches) {
+        if (!(await this.emitChunk(detachedCopy(batch), true))) return false;
+      }
+    }
+    return true;
   }
 
   private async execute(): Promise<void> {
@@ -158,7 +186,9 @@ export class ProcessingRun {
       : undefined;
     setBusy(true);
     try {
-      const outcome = this.init.startUs === null ? 'completed' : await this.runLoop(debug);
+      // A complete session goes straight to `final`, which carries everything a replay would.
+      const replayed = this.init.startUs === null || (await this.replayStored());
+      const outcome = !replayed ? 'cancelled' : this.init.startUs === null ? 'completed' : await this.runLoop(debug);
       if (outcome === 'cancelled') {
         host.setState('opened');
         return;

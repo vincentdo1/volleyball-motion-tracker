@@ -28,7 +28,11 @@ The in-browser processing engine: it turns a `File` into streamed, persisted pos
 3. `start`: the frame loop pulls decoded frames (at most 4 open, at most `MAX_IN_FLIGHT` in flight on the pipeline), runs the ML
    pipeline per the tier cadence, and packs results into `PackedFrameBatch` chunks of at most 0.5 s of media. Each chunk
    is written to OPFS first, then posted with a transfer list; the main thread acknowledges, and at most 4 chunks may be
-   unacknowledged.
+   unacknowledged. `start({ resume: true })` on a saved, incomplete session first re-emits the stored batches (`chunk`
+   events with `replayed: true`, in stream order, through the same ack window, each a private copy so the transfer
+   cannot detach the store) and then continues the seq numbering, so a `seq` is the batch's position in the stream
+   in every run. A consumer that already holds a seq (the UI after an internal recovery) ignores the repeat. A
+   complete saved session skips the replay: `final` follows at once and carries everything.
 4. `finalize` reads every chunk back from the store (so a resumed run and an uninterrupted run finalise from identical
    input), writes `posetrack.json` and emits `final`.
 
@@ -47,9 +51,24 @@ in more than two polls late (the machine slept, the tab was frozen, the thread w
 only the monotonic clock is read, so neither a suspend nor a wall-clock jump can pass for a stall (M2-16: a laptop that
 slept mid-run was restarted on the CPU tier for good).
 
+Why a hung worker is always seen (M3 review of the blind spots):
+- Main-thread timer throttling (hidden tab: 1 Hz, then once a minute): the supervisor is clocked by a worker timer
+  (`process/ticker.ts`), whose ticks arrive as messages and are not throttled. With a main-thread `setInterval` a worker
+  that hung while the tab was hidden took limit/2 minutes to be seen (late ticks count two polls), which matches the
+  340 s run once seen at 85 %. The ticker falls back to `setInterval` where a blob worker is not available.
+- A late tick after a suspend or freeze counts two polls only (M2-16): the worker was suspended with the page. The
+  silence before the suspend counts in full and a worker that hangs after waking is seen one limit later.
+- `heard()` resets the meter on any message except `stats`, the diagnostics heartbeat that a worker with a stuck pipeline
+  keeps sending from its own timer. The other events (`state`, `reply`, `chunk`, `warning`, `progress`) are one-off
+  consequences of work done, so a worker that sends them is not blocked; a live worker that stops finishing frames is
+  caught by the in-worker per-frame watchdog (inference) and, for a decoder that never answers, by the missing
+  progress reports (no `stats` in production builds).
+- Not supervised on purpose: `finalizing` (smoothing a long clip is one long, silent computation, and a restart there
+  would only redo it) and `paused`/`opened` (nothing is pending).
+
 A stall or a worker-reported `inference-timeout` restarts the worker on the same tier the first time in a run, without a
 notice, and resumes from the saved chunks; a stall after that steps one tier down the ladder. A failed WebGPU inference
-(`inference-failed` on a WebGPU tier, e.g. Firefox M2-10) steps down to the CPU tier. A step-down emits a `slow-mode`
+(`inference-failed` on a WebGPU tier, e.g. Firefox M2-10) steps down to the CPU tier; when it fails in the init warm-up, before the client has a `ready`, the engine does that itself (same worker, new tier, same `slow-mode` notice). Every error that leaves the worker is a plain object (`plainEngineError`): structured clone keeps only the name and message of an `Error`, so an `Error` subclass that carries `code` would arrive without it. A step-down emits a `slow-mode`
 warning whose `detail.reason` is `stalled` or `gpu-inference-failed`. On the slowest tier the second stall is final and
 reaches the UI as an error. `device.lost` becomes `gpu-lost`; the client swallows it, restarts the worker and
 resumes from the saved chunks. A second loss within 60 s moves to a CPU tier and emits a `slow-mode` warning.

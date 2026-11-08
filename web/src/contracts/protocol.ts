@@ -140,7 +140,14 @@ export type EngineEvent =
     }
   | ({ readonly type: 'opened' } & OpenedInfo)
   | { readonly type: 'progress'; readonly progress: ProgressInfo }
-  | { readonly type: 'chunk'; readonly seq: number; readonly batch: PackedFrameBatch }
+  | {
+      readonly type: 'chunk';
+      /** Stream position of the batch. A resumed run re-emits the stored batches with the seq they would have had. */
+      readonly seq: number;
+      readonly batch: PackedFrameBatch;
+      /** True for a batch read back from the saved session (resume), emitted before processing continues. */
+      readonly replayed?: boolean;
+    }
   | { readonly type: 'final'; readonly result: FinalResult }
   | { readonly type: 'export-progress'; readonly exportId: number; readonly progress: ProgressInfo }
   | ({ readonly type: 'export-done' } & ExportResult)

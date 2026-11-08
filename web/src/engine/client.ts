@@ -4,7 +4,7 @@
  * recovers (lost GPU, stall, failed WebGPU inference) by restarting the worker, stepping down a tier where the
  * failure calls for it, and resuming from the stored checkpoint (plan §3.4).
  */
-import { DEVICE_TIERS, type DeviceTierId, TIER_STEP_DOWN } from '@/contracts/capabilities';
+import type { DeviceTierId } from '@/contracts/capabilities';
 import type { EngineError, EngineWarning } from '@/contracts/errors';
 import { engineError } from '@/contracts/errors';
 import {
@@ -22,7 +22,9 @@ import {
   type ReadyInfo,
   type StartOptions,
 } from '@/contracts/protocol';
+import { cpuTierBelow, stepDownTier } from './capabilities/tier';
 import { EngineException, toEngineError } from './core/engine-exception';
+import { type StartTicker, type StopTicker, startTicker } from './process/ticker';
 import { AwakeMeter, COLD_START_LIMIT_MS, Watchdog } from './process/watchdog';
 
 export interface EngineClientOptions {
@@ -30,6 +32,8 @@ export interface EngineClientOptions {
   readonly createWorker?: (generation: number) => Worker;
   /** Lower bound of the silence after which a processing worker counts as stalled (tests shorten it). */
   readonly stallFloorMs?: number;
+  /** The clock of the stall supervisor (default: a worker timer, immune to throttling of a hidden tab). */
+  readonly startTicker?: StartTicker;
 }
 
 /** Two GPU losses inside this window step the engine down to a CPU tier. */
@@ -64,19 +68,7 @@ function defaultWorker(): Worker {
   return new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module', name: 'engine' });
 }
 
-/** First tier below `tier` that runs on the CPU. */
-export function cpuTierBelow(tier: DeviceTierId, isolated: boolean): DeviceTierId {
-  let next: DeviceTierId | null = tier;
-  while (next !== null && DEVICE_TIERS[next].backend !== 'wasm') next = TIER_STEP_DOWN[next];
-  if (next === null) return tier;
-  return isolated ? next : 'wasm-st';
-}
-
-/** The tier below `tier` on the fallback ladder; without cross-origin isolation the multi-threaded CPU tier is skipped. */
-export function stepDownTier(tier: DeviceTierId, isolated: boolean): DeviceTierId | null {
-  const next = TIER_STEP_DOWN[tier];
-  return next !== null && DEVICE_TIERS[next].backend === 'wasm' && !isolated ? 'wasm-st' : next;
-}
+export { cpuTierBelow, stepDownTier };
 
 class EngineClient implements EngineApi {
   private worker: Worker | null = null;
@@ -95,12 +87,14 @@ class EngineClient implements EngineApi {
   private recovering = false;
   private readonly silence: Watchdog;
   private readonly meter = new AwakeMeter(STALL_POLL_MS);
-  private stallTimer: ReturnType<typeof setInterval> | undefined;
+  private stopStallTicker: StopTicker | undefined;
+  private readonly ticker: StartTicker;
   /** Stalls of the current run so far. */
   private stalls = 0;
 
   constructor(private readonly options: EngineClientOptions) {
     this.silence = new Watchdog(options.stallFloorMs ?? STALL_FLOOR_MS, COLD_START_LIMIT_MS);
+    this.ticker = options.startTicker ?? startTicker;
   }
 
   get state(): EngineState {
@@ -288,18 +282,20 @@ class EngineClient implements EngineApi {
    * reports, so the replies and state changes that come with a start do not end the cold start.
    */
   private heard(event: EngineEvent): void {
-    if (event.type === 'progress' && this.stallTimer !== undefined) this.silence.observe(this.meter.tick());
+    // `stats` is a diagnostics heartbeat from a timer in the worker: it keeps coming while the pipeline is stuck.
+    if (event.type === 'stats') return;
+    if (event.type === 'progress' && this.stopStallTicker !== undefined) this.silence.observe(this.meter.tick());
     this.meter.reset();
   }
 
   /** Watches the worker for silence while it processes; any other state needs no supervision. */
   private watchStall(processing: boolean): void {
-    clearInterval(this.stallTimer);
-    this.stallTimer = undefined;
+    this.stopStallTicker?.();
+    this.stopStallTicker = undefined;
     if (!processing) return;
     this.silence.reset();
     this.meter.reset();
-    this.stallTimer = setInterval(() => this.checkStall(), STALL_POLL_MS);
+    this.stopStallTicker = this.ticker(STALL_POLL_MS, () => this.checkStall());
   }
 
   private checkStall(): void {

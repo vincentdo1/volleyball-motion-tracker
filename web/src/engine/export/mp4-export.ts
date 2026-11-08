@@ -17,9 +17,9 @@ import { indexAtOrBefore } from '@/contracts/frame-table';
 import type { FinalResult } from '@/contracts/posetrack';
 import type { ExportRequest, ProgressInfo } from '@/contracts/protocol';
 import { containTransform, type SkeletonRendererFactory } from '@/contracts/renderer';
+import { assignColorSlots, createFrameSource, type FrameSource } from '@/render';
 import { fail } from '../core/engine-exception';
 import { ProgressTracker } from '../process/progress';
-import { RenderFrames } from './render-frames';
 
 /** Largest in-memory MP4 (plan §3.11); bigger exports are fragmented straight to OPFS. */
 const IN_MEMORY_LIMIT_BYTES = 1024 ** 3;
@@ -60,6 +60,18 @@ export function candidateSizes(
   };
   const sizes = [sized(maxHeight ?? displayHeight), sized(FALLBACK_HEIGHT)];
   return sizes.filter((s, i) => sizes.findIndex((o) => o.width === s.width && o.height === s.height) === i);
+}
+
+/**
+ * The same frame source the results view draws from (gate, reference bone lengths, ball trail), with the colour
+ * slots assigned over the whole result so a player keeps one hue for the entire export and reused hues get their cue.
+ */
+export function frameSourceOf(result: Pick<FinalResult, 'frames' | 'tracks' | 'ball'>): FrameSource {
+  const slots = assignColorSlots(
+    result.tracks.map((t) => ({ id: t.id, firstPtsUs: t.ptsUs[0] ?? 0, lastPtsUs: t.ptsUs[t.ptsUs.length - 1] ?? 0 })),
+  );
+  const tracks = result.tracks.map((t) => ({ ...t, colorSlot: slots.get(t.id) ?? t.colorSlot }));
+  return createFrameSource({ frames: result.frames, tracks, ball: result.ball });
 }
 
 function cancelled() {
@@ -156,7 +168,7 @@ export async function exportMp4(job: Mp4Job): Promise<Mp4Result> {
     }
 
     await output.start();
-    const frames = new RenderFrames(result);
+    const frames = frameSourceOf(result);
     const view = containTransform(clip.displayWidth, clip.displayHeight, size.width, size.height, 1);
     const ptsUs = result.frames.ptsUs;
     const inRange = ptsUs.filter((p) => p >= startUs && p < endUs).length;
@@ -171,8 +183,9 @@ export async function exportMp4(job: Mp4Job): Promise<Mp4Result> {
         const pts = Math.round(sample.timestamp * 1e6);
         if (pts < Math.max(0, startUs) || pts >= endUs) continue;
         sample.draw(ctx, 0, 0, size.width, size.height);
+        // Only a frame of the table is drawn on: a decoded frame that is not in it gets no overlay.
         const index = indexAtOrBefore(ptsUs, pts);
-        renderer.draw(ctx, frames.frame(pts, index), view, request.overlay);
+        if (index >= 0 && ptsUs[index] === pts) renderer.draw(ctx, frames.frameAt(index), view, request.overlay);
         await videoSource.add(sample.timestamp, sample.duration);
         done++;
         const info = tracker.update(now(), pts, done);

@@ -202,6 +202,48 @@ describe('stall supervision', () => {
     expect([...warnings, ...errors]).toEqual([]);
   });
 
+  it('is not kept from seeing a hang by the diagnostics heartbeat of a worker whose pipeline is stuck', async () => {
+    await startRun();
+    steady();
+    for (let i = 0; i < STALL_FLOOR_MS / POLL_MS - 1; i++) {
+      workers[0]?.say({ type: 'stats', stats: {} as EngineEventOf<'stats'>['stats'] });
+      await poll();
+    }
+    expect(workers).toHaveLength(1);
+    workers[0]?.say({ type: 'stats', stats: {} as EngineEventOf<'stats'>['stats'] });
+    await poll();
+    expect(workers).toHaveLength(2);
+  });
+
+  it('is clocked by the ticker it is given, not by main-thread timers (a hidden tab throttles those)', async () => {
+    const live = new Set<() => void>();
+    const clocked = createEngine({
+      createWorker: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+      startTicker: (_everyMs, onTick) => {
+        live.add(onTick);
+        return () => live.delete(onTick);
+      },
+    });
+    await clocked.init({});
+    await clocked.open(new File([], 'clip.mp4'));
+    await clocked.start();
+    expect(live.size).toBe(1);
+    // The main thread's own timers never fire (throttled to nothing); the ticker's messages do.
+    for (let i = 0; i < 5; i++) workers.at(-1)?.progress();
+    const before = workers.length;
+    for (let i = 0; i < STALL_FLOOR_MS / POLL_MS; i++) {
+      clock += POLL_MS;
+      for (const tick of [...live]) tick();
+    }
+    expect(workers.length).toBe(before + 1);
+    // The restarted worker gets a fresh supervisor, and the old one is stopped.
+    expect(live.size).toBe(0);
+  });
+
   it('still catches a stall that follows a suspend', async () => {
     await startRun();
     steady();
