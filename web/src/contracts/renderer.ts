@@ -34,7 +34,11 @@ export interface RenderPlayer {
   readonly kpFlags: Uint8Array | null;
   /** `SampleFlag` bits. */
   readonly sampleFlags: number;
-  /** Per-bone median length of this track in display px (plausibility gate), indexed like RENDER_BONES. */
+  /**
+   * Per-bone reference length in display px for the plausibility gate, indexed like RENDER_BONES: the median over this
+   * track's confident samples (both joints >= 0.6) within 15 samples either side of the frame. It is local, so a player
+   * who walks toward the camera does not have every bone read as a glitch.
+   */
   readonly refBoneLengths: Float32Array | null;
 }
 

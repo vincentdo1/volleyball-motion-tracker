@@ -14,6 +14,7 @@ import {
   POSETRACK_SCHEMA_VERSION,
   type PoseTrackHeader,
 } from '@/contracts/posetrack';
+import { assignColorSlots } from '@/render/palette';
 import { decodeBatches } from '../store/chunk-codec';
 import type { Manifest, SessionStore } from '../store/session-store';
 import { ballCandidatesOf } from './batch-packer';
@@ -128,6 +129,18 @@ export interface FinalizeInput {
   readonly partial?: PartialInfo;
 }
 
+/**
+ * Colour slots assigned once over the whole clip (05 §2.4): tracks that overlap in time get distinct hues and a reused
+ * hue gets its variant cue. Assigning them here means the results view, the PNG and MP4 overlays and the JSON and CSV
+ * exports all show a player in the same colour.
+ */
+export function withColorSlots(tracks: FinalResult['tracks']): FinalResult['tracks'] {
+  const slots = assignColorSlots(
+    tracks.map((t) => ({ id: t.id, firstPtsUs: t.ptsUs[0] ?? 0, lastPtsUs: t.ptsUs[t.ptsUs.length - 1] ?? 0 })),
+  );
+  return tracks.map((t) => ({ ...t, colorSlot: slots.get(t.id) ?? t.colorSlot }));
+}
+
 /** Offline pass over the stored raw chunks: the same input whether the run was uninterrupted or resumed. */
 export async function finalizeResult(input: FinalizeInput): Promise<FinalResult> {
   const batches = await loadBatches(input.store, input.manifest);
@@ -147,5 +160,5 @@ export async function finalizeResult(input: FinalizeInput): Promise<FinalResult>
   const header = input.partial
     ? { ...input.header, extensions: { ...input.header.extensions, partial: input.partial } }
     : input.header;
-  return { header, frames, tracks, ball };
+  return { header, frames, tracks: withColorSlots(tracks), ball };
 }

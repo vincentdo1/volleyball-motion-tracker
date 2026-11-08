@@ -12,13 +12,12 @@ describe('export frame source', () => {
     for (const player of frame.players) expect(player.refBoneLengths).not.toBeNull();
   });
 
-  it('gives overlapping players distinct slots, with variants past the eight hues', () => {
-    const slots = frameSourceOf(scene)
-      .frameAt(30)
-      .players.map((p) => p.colorSlot);
-    expect(new Set(slots).size).toBe(slots.length);
-    expect(slots.length).toBeGreaterThan(8);
-    expect(slots.some((slot) => slot >= 8)).toBe(true);
+  it('keeps the colour slots the result carries, so the video matches the results view', () => {
+    const slotOf = new Map(scene.tracks.map((t) => [t.id, (t.colorSlot + 3) % 32]));
+    const shifted = { ...scene, tracks: scene.tracks.map((t) => ({ ...t, colorSlot: slotOf.get(t.id) ?? 0 })) };
+    const players = frameSourceOf(shifted).frameAt(30).players;
+    expect(players.length).toBeGreaterThan(8);
+    for (const p of players) expect(p.colorSlot).toBe(slotOf.get(p.trackId));
   });
 
   it('draws a ball trail', () => {
