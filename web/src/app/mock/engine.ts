@@ -389,7 +389,7 @@ export class MockEngine implements EngineApi {
     const error = this.failAt('export');
     if (error) throw error;
     // Like the real engine: a finished run, or the frames analysed before a cancel (state `opened`).
-    const source = this.final ?? (this.current === 'opened' ? this.partialResult() : null);
+    const source = this.final ?? (this.current === 'opened' ? this.buildPartialResult() : null);
     if (!source || !this.clip) throw engineError('invalid-state', 'nothing to export yet');
     const stem = fileStem(this.clip.clip.name);
     const exportId = 1;
@@ -435,8 +435,14 @@ export class MockEngine implements EngineApi {
     return result;
   }
 
+  async partialResult(): Promise<FinalResult | null> {
+    const result = this.current === 'opened' ? this.buildPartialResult() : null;
+    if (result) this.emit({ type: 'final', result });
+    return result;
+  }
+
   /** The result of the frames analysed so far, or null when there are none. */
-  private partialResult(): FinalResult | null {
+  private buildPartialResult(): FinalResult | null {
     const { scene, clip, analysed } = this;
     if (!scene || !clip || analysed === 0) return null;
     const full = this.buildFinal(scene, clip.clip, this.deps.now());

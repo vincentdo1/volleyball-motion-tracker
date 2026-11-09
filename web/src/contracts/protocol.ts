@@ -10,7 +10,7 @@ import type { StageTimings } from './pipeline';
 import type { ClipMetadata, FinalResult, FrameTableColumns, ModelInfo, PackedFrameBatch } from './posetrack';
 import type { RenderOptions } from './renderer';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export type EngineState =
   | 'idle'
@@ -68,6 +68,7 @@ export type EngineCommand =
   | { readonly type: 'pause'; readonly requestId: number }
   | { readonly type: 'resume'; readonly requestId: number }
   | { readonly type: 'cancel'; readonly requestId: number }
+  | { readonly type: 'partial-result'; readonly requestId: number }
   | { readonly type: 'ack'; readonly seq: number }
   | { readonly type: 'export'; readonly requestId: number; readonly exportId: number; readonly request: ExportRequest }
   | { readonly type: 'cancel-export'; readonly requestId: number; readonly exportId: number }
@@ -148,6 +149,16 @@ export type EngineEvent =
       /** True for a batch read back from the saved session (resume), emitted before processing continues. */
       readonly replayed?: boolean;
     }
+  /**
+   * A processing run started: after `start()`, and after the client's own restart of a run (a stall, a lost GPU or a
+   * tier step-down), before any chunk of that run. `fresh`: the stream starts again from the beginning (seq from 0,
+   * new track ids), so a consumer drops the streamed results, applied seqs and progress it holds. Otherwise the run
+   * resumes: the stored part is replayed first (`replayed` chunks with their original seq) and the stream continues
+   * after it, so a consumer keeps what it holds and ignores a seq it has already applied. `resumedFrames` is the number
+   * of frames already analysed (0 when fresh).
+   */
+  | { readonly type: 'run-started'; readonly fresh: boolean; readonly resumedFrames: number }
+  /** The finalized result of a completed run, or of a cancelled run's analysed part in reply to `partialResult()`. */
   | { readonly type: 'final'; readonly result: FinalResult }
   | { readonly type: 'export-progress'; readonly exportId: number; readonly progress: ProgressInfo }
   | ({ readonly type: 'export-done' } & ExportResult)
@@ -167,6 +178,12 @@ export interface EngineApi {
   pause(): Promise<void>;
   resume(): Promise<void>;
   cancel(): Promise<void>;
+  /**
+   * After a cancel: the analysed part of the run, finalized exactly as the partial exports use it (stitched, smoothed,
+   * colour slots assigned, `header.extensions.partial` set), so the kept view and its exports share one set of track
+   * ids and colours. Also emitted as a `final` event. null when nothing was analysed. Valid in state 'opened'.
+   */
+  partialResult(): Promise<FinalResult | null>;
   exportResult(request: ExportRequest): Promise<ExportResult>;
   dispose(): Promise<void>;
   on<T extends EngineEventType>(type: T, listener: (event: EngineEventOf<T>) => void): () => void;

@@ -117,6 +117,8 @@ export class EngineCore {
         return this.resume(command);
       case 'cancel':
         return this.cancel(command);
+      case 'partial-result':
+        return this.reply(command.requestId, engineError('invalid-state', 'Partial results are not available yet.'));
       case 'ack':
         this.run?.acknowledge(command.seq);
         return;

@@ -7,6 +7,7 @@
 import type { DeviceTierId } from '@/contracts/capabilities';
 import type { EngineError, EngineWarning } from '@/contracts/errors';
 import { engineError } from '@/contracts/errors';
+import type { FinalResult } from '@/contracts/posetrack';
 import {
   type EngineApi,
   type EngineCommand,
@@ -138,6 +139,10 @@ class EngineClient implements EngineApi {
   async cancel(): Promise<void> {
     await this.send((requestId) => ({ type: 'cancel', requestId }));
     this.startOptions = null;
+  }
+
+  partialResult(): Promise<FinalResult | null> {
+    return Promise.reject(new EngineException(engineError('invalid-state', 'Partial results are not available yet.')));
   }
 
   /** Cancel with `signal`: the call then rejects with an `export-failed` error whose `detail.cancelled` is true. */
