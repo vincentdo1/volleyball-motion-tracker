@@ -65,5 +65,6 @@ web/test-results/
 web/playwright-report/
 web/coverage/
 web/.vite/
+web/.vitest/
 .wrangler/
 deploy/cloudflare/.wrangler/

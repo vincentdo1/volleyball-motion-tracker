@@ -41,7 +41,10 @@ export const viteConfig: UserConfig = {
     conditions: ['onnxruntime-web-use-extern-wasm', ...defaultClientConditions],
   },
   worker: { format: 'es' },
-  optimizeDeps: { exclude: ['onnxruntime-web'] },
+  // A dependency the first scan misses is bundled on first use, and that reloads the page: in the browser tests the
+  // reload fails every suite that is loading (first run after an install or a config change). Listing the ones the
+  // scan misses bundles them up front.
+  optimizeDeps: { exclude: ['onnxruntime-web'], include: ['react-dom/client', 'zustand/react/shallow'] },
   server: { host: '127.0.0.1', port, strictPort: true },
   preview: { host: '127.0.0.1', port, strictPort: true },
   build: { target: 'es2023', sourcemap: true, chunkSizeWarningLimit: 1500 },
