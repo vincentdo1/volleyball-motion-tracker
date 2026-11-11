@@ -64,8 +64,9 @@ volleyball-tracker test_videos/volleyball_spike_attempt_02.mp4 output_videos/vol
 ## Skeletal (web app)
 
 `web/` contains Skeletal, the in-browser successor: open a volleyball clip and get tracked, smoothed 2D skeletons for
-every player plus the ball, processed entirely on your device. Nothing is uploaded and no account is needed. Results
-export as an MP4 with the overlay, a PNG frame, PoseTrack JSON or CSV.
+every player plus the ball, processed entirely on your device. Nothing is uploaded and no account is needed. Pick a
+player to add hand trails, ghost poses, joint angles and speed colours for that player. Results export as an MP4 with
+the overlay, a PNG frame, PoseTrack JSON or CSV; the MP4 and the PNG show the same view as the app.
 
 Skeletal targets desktop browsers. Chrome and Edge run the models on the GPU (WebGPU); where the GPU cannot run them,
 it switches to a slower CPU mode by itself. Safari and Firefox are tested with Playwright's WebKit and Firefox builds.
