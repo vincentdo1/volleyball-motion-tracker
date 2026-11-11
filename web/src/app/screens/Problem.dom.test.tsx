@@ -5,9 +5,16 @@ import { Problem } from './Problem';
 
 afterEach(cleanup);
 
-function show(code: EngineErrorCode, terminal = false) {
+function show(code: EngineErrorCode, terminal = false, canFallbackTier = true) {
   const handlers = { onRetry: vi.fn(), onFallbackTier: vi.fn(), onNewClip: vi.fn() };
-  render(<Problem error={engineError(code, 'details here')} terminal={terminal} {...handlers} />);
+  render(
+    <Problem
+      error={engineError(code, 'details here')}
+      terminal={terminal}
+      canFallbackTier={canFallbackTier}
+      {...handlers}
+    />,
+  );
   return handlers;
 }
 
@@ -22,6 +29,14 @@ describe('Problem', () => {
     const { onFallbackTier } = show('gpu-unavailable');
     fireEvent.click(screen.getByRole('button', { name: 'Try a lighter mode' }));
     expect(onFallbackTier).toHaveBeenCalledOnce();
+  });
+
+  it('offers a reload or another browser instead of a lighter mode at the lowest tier', () => {
+    const { onFallbackTier } = show('gpu-unavailable', false, false);
+    expect(screen.queryByRole('button', { name: 'Try a lighter mode' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Reload the page' })).toBeTruthy();
+    expect(screen.getByTestId('browser-hint').textContent).toMatch(/Chrome or Edge/);
+    expect(onFallbackTier).not.toHaveBeenCalled();
   });
 
   it('asks for another file when the clip is unusable', () => {

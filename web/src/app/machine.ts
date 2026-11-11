@@ -2,7 +2,7 @@ import { assign, fromPromise, setup } from 'xstate';
 import { type DeviceTierId, TIER_STEP_DOWN } from '@/contracts/capabilities';
 import { type EngineError, engineError, isEngineError } from '@/contracts/errors';
 import type { EngineApi, InitOptions, OpenedInfo, ResumeInfo } from '@/contracts/protocol';
-import { ensureReady, openClip, startRun, stopRun } from './engine-lifecycle';
+import { ensureReady, keepRun, openClip, startRun, stopRun } from './engine-lifecycle';
 import { useSessionStore } from './stores/session';
 import { useViewStore } from './stores/view';
 
@@ -26,6 +26,9 @@ export interface AppContext {
   readonly error: EngineError | null;
   /** Where "Try again" goes back to. */
   readonly retry: 'boot' | 'open' | 'analyze';
+  /** The tier the engine says it runs on (its boot result, updated by every later `ready`); null until known. */
+  readonly tier: DeviceTierId | null;
+  /** The tier the user stepped down to, which the engine is initialised with. */
   readonly tierOverride: DeviceTierId | null;
 }
 
@@ -33,6 +36,7 @@ export type AppEvent =
   | { type: 'PICK'; file: ClipInput }
   | { type: 'ENGINE_DONE' }
   | { type: 'ENGINE_ERROR'; error: EngineError }
+  | { type: 'ENGINE_READY'; tier: DeviceTierId }
   | { type: 'CANCEL'; keep: boolean }
   | { type: 'CONTINUE' }
   | { type: 'START_OVER' }
@@ -44,6 +48,41 @@ export type AppEvent =
 /** An earlier run is worth offering when it was made with the current settings. */
 export function hasSavedRun({ resume }: Pick<OpenedInfo, 'resume'>): boolean {
   return resume !== null && resume.settingsMatch && resume.chunks > 0;
+}
+
+/**
+ * The tier "Try a lighter mode" would go to, or null when there is none. It steps down from the tier the engine
+ * actually runs on (it may have fallen back on its own), else from the one the user asked for last, else from the
+ * default a first start-up begins with.
+ */
+export function lighterTier(context: Pick<AppContext, 'tier' | 'tierOverride'>): DeviceTierId | null {
+  return TIER_STEP_DOWN[context.tier ?? context.tierOverride ?? 'webgpu-default'];
+}
+
+/**
+ * Keeps a cancelled run: what was analysed shows at once, and the engine's finalized partial result replaces it
+ * when it arrives, so the view, the player list and every export share its track ids and colours. If the engine
+ * cannot provide it, the streamed view stays.
+ */
+async function keepPartialResult(engine: EngineApi): Promise<void> {
+  const clip = useSessionStore.getState().clip;
+  useSessionStore.getState().endClip();
+  try {
+    const result = await keepRun(engine);
+    const session = useSessionStore.getState();
+    // the `final` event usually got there first; the clip may also have been dropped meanwhile
+    if (result && session.clip === clip && session.final === null) session.setFinal(result);
+  } catch {
+    // the streamed view stays
+  } finally {
+    const session = useSessionStore.getState();
+    if (session.clip === clip) session.partialSettled();
+  }
+}
+
+/** The app starts a new init attempt: the engine's earlier notes (slow mode, ...) no longer apply to what follows. */
+function forgetEngineNotes(): void {
+  useSessionStore.getState().resetEngineWarnings();
 }
 
 /** What the engine is initialised with, including a tier the user stepped down to. */
@@ -68,18 +107,18 @@ export const appMachine = setup({
   },
   actors: {
     boot: fromPromise(async ({ input }: { input: { engine: EngineApi; options: InitOptions } }) =>
-      ensureReady(input.engine, input.options),
+      ensureReady(input.engine, input.options, forgetEngineNotes),
     ),
     open: fromPromise(async ({ input }: { input: { engine: EngineApi; file: ClipInput; options: InitOptions } }) => {
-      const opened = await openClip(input.engine, input.file, input.options);
+      const opened = await openClip(input.engine, input.file, input.options, forgetEngineNotes);
       useViewStore.getState().reset();
       useSessionStore.getState().beginClip(input.file, opened.clip, opened.frameTable);
       return opened;
     }),
-    analyze: fromPromise(async ({ input }: { input: { engine: EngineApi; resume: boolean } }) => {
-      useSessionStore.getState().beginRun();
-      return startRun(input.engine, { resume: input.resume });
-    }),
+    // the engine's `run-started` event tells the session when the stream begins again (see bridge.ts)
+    analyze: fromPromise(async ({ input }: { input: { engine: EngineApi; resume: boolean } }) =>
+      startRun(input.engine, { resume: input.resume }),
+    ),
   },
   actions: {
     fail: assign(({ event }) => ({ error: asEngineError((event as { error?: unknown }).error) })),
@@ -90,17 +129,16 @@ export const appMachine = setup({
       useViewStore.getState().reset();
     },
     keepPartial: ({ context }) => {
-      void stopRun(context.engine);
-      useSessionStore.getState().endClip();
+      void keepPartialResult(context.engine);
     },
     discard: ({ context }) => {
       void stopRun(context.engine);
     },
     continueRun: assign({ continueRun: true }),
     startOver: assign({ continueRun: false }),
-    stepDownTier: assign(({ context }) => ({
-      tierOverride: TIER_STEP_DOWN[context.tierOverride ?? 'webgpu-default'] ?? 'wasm-st',
-    })),
+    // the engine reports the tier it ends up on once it is ready again; until then the one asked for is the best guess
+    stepDownTier: assign(({ context }) => ({ tierOverride: lighterTier(context), tier: null })),
+    rememberTier: assign(({ event }) => ({ tier: event.type === 'ENGINE_READY' ? event.tier : null })),
   },
 }).createMachine({
   id: 'app',
@@ -113,14 +151,24 @@ export const appMachine = setup({
     continueRun: false,
     error: null,
     retry: 'boot',
+    tier: null,
     tierOverride: null,
   }),
+  // the engine reports its tier after its own recoveries too, whatever screen shows
+  on: { ENGINE_READY: { actions: 'rememberTier' } },
   states: {
     booting: {
       invoke: {
         src: 'boot',
         input: ({ context }) => ({ engine: context.engine, options: engineOptions(context) }),
-        onDone: [{ guard: ({ context }) => context.file !== null, target: 'probing' }, { target: 'landing' }],
+        onDone: [
+          {
+            guard: ({ context }) => context.file !== null,
+            target: 'probing',
+            actions: assign({ tier: ({ event }) => event.output.tier }),
+          },
+          { target: 'landing', actions: assign({ tier: ({ event }) => event.output.tier }) },
+        ],
         onError: [
           {
             guard: ({ event }) => asEngineError(event.error).code === 'unsupported-browser',
@@ -188,7 +236,11 @@ export const appMachine = setup({
           { guard: ({ context }) => context.retry === 'open', target: 'probing', actions: 'clearError' },
           { target: 'analyzing', actions: 'clearError' },
         ],
-        FALLBACK_TIER: { target: 'booting', actions: ['stepDownTier', 'clearError'] },
+        FALLBACK_TIER: {
+          guard: ({ context }) => lighterTier(context) !== null,
+          target: 'booting',
+          actions: ['stepDownTier', 'clearError'],
+        },
         NEW_CLIP: { target: 'landing', actions: ['clearError', 'forget'] },
         DISMISS: { target: 'landing', actions: ['clearError', 'forget'] },
       },

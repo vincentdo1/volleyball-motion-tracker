@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import { DEFAULT_RENDER_OPTIONS, type RenderOptions } from '@/contracts/renderer';
 import { useThemeStore } from '@/ui/theme';
 
@@ -19,11 +20,13 @@ export interface ViewState {
   readonly showGhosts: boolean;
   readonly showAngles: boolean;
   readonly velocityColor: boolean;
-  /** The last drawn frame skipped the ghosts because the focus player barely moved. */
-  readonly ghostsStill: boolean;
   readonly glow: number;
   readonly panelTab: PanelTab;
   setFocus(trackId: number | null): void;
+  /** Forget the picked, hidden and solo players (their ids belong to a stream that was replaced). */
+  clearPlayers(): void;
+  /** Follow the picks to a result that numbers its players again: an id without an entry is dropped. */
+  remapPlayers(map: ReadonlyMap<number, number>): void;
   toggleHidden(trackId: number): void;
   toggleSolo(trackId: number): void;
   setLayer(
@@ -31,7 +34,6 @@ export interface ViewState {
     on: boolean,
   ): void;
   setVelocityColor(on: boolean): void;
-  setGhostsStill(still: boolean): void;
   setColorMode(mode: RenderOptions['colorMode']): void;
   setGlow(glow: number): void;
   setPanelTab(tab: PanelTab): void;
@@ -51,7 +53,6 @@ const INITIAL = {
   showGhosts: false,
   showAngles: false,
   velocityColor: false,
-  ghostsStill: false,
   glow: DEFAULT_RENDER_OPTIONS.glow,
   panelTab: 'players' as PanelTab,
 };
@@ -60,6 +61,16 @@ const INITIAL = {
 export const useViewStore = create<ViewState>((set) => ({
   ...INITIAL,
   setFocus: (focusTrackId) => set((s) => ({ focusTrackId: s.focusTrackId === focusTrackId ? null : focusTrackId })),
+  clearPlayers: () => set({ focusTrackId: null, soloTrackId: null, hiddenTrackIds: [] }),
+  remapPlayers: (map) =>
+    set((s) => ({
+      focusTrackId: s.focusTrackId === null ? null : (map.get(s.focusTrackId) ?? null),
+      soloTrackId: s.soloTrackId === null ? null : (map.get(s.soloTrackId) ?? null),
+      hiddenTrackIds: s.hiddenTrackIds.flatMap((id) => {
+        const next = map.get(id);
+        return next === undefined ? [] : [next];
+      }),
+    })),
   toggleHidden: (id) =>
     set((s) => ({
       hiddenTrackIds: s.hiddenTrackIds.includes(id)
@@ -74,12 +85,25 @@ export const useViewStore = create<ViewState>((set) => ({
     })),
   setLayer: (layer, on) => set({ [layer]: on }),
   setVelocityColor: (velocityColor) => set({ velocityColor }),
-  setGhostsStill: (ghostsStill) => set({ ghostsStill }),
   setColorMode: (colorMode) => set({ colorMode }),
   setGlow: (glow) => set({ glow }),
   setPanelTab: (panelTab) => set({ panelTab }),
-  reset: () => set({ ...INITIAL, hiddenTrackIds: [] }),
+  reset: () => {
+    useDrawStatus.setState({ ghostsStill: false });
+    set({ ...INITIAL, hiddenTrackIds: [] });
+  },
 }));
+
+/**
+ * What the last drawn frame reports back. Its own small store: it changes from inside the draw loop, and the screens
+ * that subscribe to the view store (the player, the timeline, the panels) must not re-render for it.
+ */
+export const useDrawStatus = create<{ readonly ghostsStill: boolean }>(() => ({ ghostsStill: false }));
+
+/** The last drawn frame skipped the ghosts because the focus player barely moved. */
+export function setGhostsStill(still: boolean): void {
+  if (useDrawStatus.getState().ghostsStill !== still) useDrawStatus.setState({ ghostsStill: still });
+}
 
 /**
  * The renderer's options for the current view. `allTrackIds` lets "solo" hide everyone else; the result is
@@ -100,7 +124,23 @@ export function useRenderOptions(allTrackIds: readonly number[]): RenderOptions 
     showAngles,
     velocityColor,
     glow,
-  } = useViewStore();
+  } = useViewStore(
+    useShallow((s) => ({
+      focusTrackId: s.focusTrackId,
+      hiddenTrackIds: s.hiddenTrackIds,
+      soloTrackId: s.soloTrackId,
+      colorMode: s.colorMode,
+      showJoints: s.showJoints,
+      showChips: s.showChips,
+      showBall: s.showBall,
+      showTrails: s.showTrails,
+      showFocusTrails: s.showFocusTrails,
+      showGhosts: s.showGhosts,
+      showAngles: s.showAngles,
+      velocityColor: s.velocityColor,
+      glow: s.glow,
+    })),
+  );
   const reducedMotion = useThemeStore((s) => s.reducedMotion);
   // keyed by the ids themselves: a fresh array with the same ids must not rebuild the options
   const idKey = allTrackIds.join(',');

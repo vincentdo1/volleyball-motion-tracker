@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createActor, waitFor } from 'xstate';
 import type { ClipMetadata } from '@/contracts/posetrack';
-import type { OpenedInfo, ReadyInfo, ResumeInfo } from '@/contracts/protocol';
+import type { EngineState, OpenedInfo, ReadyInfo, ResumeInfo } from '@/contracts/protocol';
 import { syntheticFrameTable } from '@/render/synthetic';
 import { bridgeEngine } from './bridge';
-import { appMachine } from './machine';
+import { appMachine, lighterTier } from './machine';
 import type { ClipInfo } from './mock/clip';
 import { DEFAULT_MOCK_CONFIG, type MockConfig } from './mock/config';
 import { MockEngine } from './mock/engine';
-import { useSessionStore } from './stores/session';
+import { isPartialResult, useSessionStore } from './stores/session';
 import { useViewStore } from './stores/view';
 
 const FRAMES = 48;
@@ -252,5 +252,192 @@ describe('app machine with the mock engine', () => {
       await waitFor(actor, (s) => s.matches('results'));
       expect(startSpy).toHaveBeenCalledWith({ resume: false });
     });
+  });
+});
+
+/**
+ * An engine whose reported `state` lags the worker's like the real client's: after `start()` it still reads `opened`
+ * until the test lets the state event through (`release`), though the run is going.
+ */
+class LaggingStateEngine extends MockEngine {
+  private lagging = false;
+  private shown: EngineState = 'idle';
+
+  constructor(config: MockConfig) {
+    super(config, { readClip: async () => clip() });
+    this.on('state', (e) => {
+      if (!this.lagging) this.shown = e.state;
+    });
+  }
+
+  override get state(): EngineState {
+    return this.shown;
+  }
+
+  override async start(options?: Parameters<MockEngine['start']>[0]): Promise<void> {
+    this.lagging = true;
+    return super.start(options);
+  }
+
+  /** The worker's state event reaches the client. */
+  release(state: EngineState): void {
+    this.lagging = false;
+    this.shown = state;
+  }
+}
+
+describe('cancel while the client state lags (M3 #21/#22)', () => {
+  it('cancels the run once whatever the client state says, and the next clip reaches results', async () => {
+    const engine = new LaggingStateEngine({ ...FAST, chunkDelayMs: 20 });
+    const cancel = vi.spyOn(engine, 'cancel');
+    const { actor } = start(FAST, engine);
+    await waitFor(actor, (s) => s.matches('landing'));
+    actor.send({ type: 'PICK', file: file() });
+    await waitFor(actor, (s) => s.matches('analyzing'));
+    // the worker is processing; the client has not heard yet
+    expect(engine.state).toBe('opened');
+    actor.send({ type: 'CANCEL', keep: false });
+    engine.release('opened');
+    actor.send({ type: 'PICK', file: file() });
+    const snapshot = await waitFor(actor, (s) => s.matches('results') || s.matches('error'), { timeout: 5000 });
+    expect(snapshot.value).toBe('results');
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(useSessionStore.getState().final?.tracks.length).toBe(5);
+  });
+});
+
+describe('keeping a cancelled run (M3 #15/#28)', () => {
+  it('shows the engine partial result: same track ids as the exports, flagged partial, with its analysed share', async () => {
+    const { actor, engine } = start({ ...FAST, chunkDelayMs: 40 });
+    await waitFor(actor, (s) => s.matches('landing'));
+    actor.send({ type: 'PICK', file: file() });
+    await until(() => useSessionStore.getState().processedFrames >= 8);
+    const streamedPlayers = [...(useSessionStore.getState().lanes?.players.keys() ?? [])];
+    // the person picked, as seen in the streamed view: where they stand in the first frame they are on screen
+    const picked = streamedPlayers[0] as number;
+    useViewStore.getState().setFocus(picked);
+    const pickedLane = useSessionStore.getState().lanes?.players.get(picked) as Uint8Array;
+    const frame = pickedLane.findIndex((level) => level !== 0);
+    const pickedBox = useSessionStore
+      .getState()
+      .source?.frameAt(frame)
+      .players.find((p) => p.trackId === picked)?.box as readonly number[];
+    expect(pickedBox).toBeTruthy();
+    actor.send({ type: 'CANCEL', keep: true });
+    expect(actor.getSnapshot().value).toBe('results');
+    expect(useSessionStore.getState().partialPending).toBe(true);
+    await until(() => useSessionStore.getState().final !== null);
+    const session = useSessionStore.getState();
+    expect(isPartialResult(session.final)).toBe(true);
+    expect(session.kept).toBe(true);
+    expect(session.partialPending).toBe(false);
+    // the lanes, and so the player list, carry the result's own ids
+    const resultIds = session.final?.tracks.map((t) => t.id).sort() ?? [];
+    expect([...(session.lanes?.players.keys() ?? [])].sort()).toEqual(resultIds);
+    // "only N% analysed" is the delivered share, below the whole clip
+    expect(session.processedFrames).toBeGreaterThanOrEqual(8);
+    expect(session.processedFrames).toBeLessThan(FRAMES);
+    // the picked player follows to an id of the result (or is dropped), never a stale one
+    const focus = useViewStore.getState().focusTrackId;
+    expect(focus).not.toBeNull();
+    expect(resultIds).toContain(focus);
+    // and it is the same person: the focused track of the result stands where the picked one stood
+    const now = session.source?.frameAt(frame).players.find((p) => p.trackId === focus)?.box as readonly number[];
+    expect(now).toBeTruthy();
+    for (let k = 0; k < 4; k++) expect(Math.abs((now[k] as number) - (pickedBox[k] as number))).toBeLessThan(40);
+    expect(await engine.partialResult()).not.toBeNull();
+  });
+
+  it('keeps the streamed view when the engine cannot provide the partial result', async () => {
+    const engine = new MockEngine({ ...FAST, chunkDelayMs: 40 }, { readClip: async () => clip() });
+    vi.spyOn(engine, 'partialResult').mockRejectedValue(new Error('invalid-state'));
+    const { actor } = start(FAST, engine);
+    await waitFor(actor, (s) => s.matches('landing'));
+    actor.send({ type: 'PICK', file: file() });
+    await until(() => useSessionStore.getState().processedFrames >= 8);
+    actor.send({ type: 'CANCEL', keep: true });
+    await until(() => !useSessionStore.getState().partialPending);
+    const session = useSessionStore.getState();
+    expect(session.final).toBeNull();
+    expect(session.kept).toBe(true);
+    expect(session.lanes?.players.size).toBeGreaterThan(0);
+  });
+
+  it('discarding still drops everything', async () => {
+    const { actor } = start({ ...FAST, chunkDelayMs: 40 });
+    await waitFor(actor, (s) => s.matches('landing'));
+    actor.send({ type: 'PICK', file: file() });
+    await until(() => useSessionStore.getState().processedFrames >= 8);
+    actor.send({ type: 'CANCEL', keep: false });
+    expect(useSessionStore.getState().clip).toBeNull();
+    expect(useSessionStore.getState().final).toBeNull();
+  });
+});
+
+describe('tier ladder (M3 #2)', () => {
+  const ready = (engine: MockEngine, tier: ReadyInfo['tier']) =>
+    (engine as unknown as { emit: (e: unknown) => void }).emit({ type: 'ready', tier });
+
+  it('steps down from the tier the engine runs on, including after its own recoveries', async () => {
+    const { actor, engine } = start({ ...FAST, errorCode: 'out-of-memory' });
+    await waitFor(actor, (s) => s.matches('landing'));
+    expect(actor.getSnapshot().context.tier).toBe('webgpu-default');
+    // the engine fell back to wasm-mt on its own and announced it
+    ready(engine, 'wasm-mt');
+    expect(actor.getSnapshot().context.tier).toBe('wasm-mt');
+    actor.send({ type: 'PICK', file: file() });
+    await waitFor(actor, (s) => s.matches('error'));
+    actor.send({ type: 'FALLBACK_TIER' });
+    expect(actor.getSnapshot().context.tierOverride).toBe('wasm-st');
+  });
+
+  it('offers no lighter mode at the lowest tier and ignores the event', async () => {
+    const { actor, engine } = start({ ...FAST, errorCode: 'out-of-memory' });
+    await waitFor(actor, (s) => s.matches('landing'));
+    ready(engine, 'wasm-st');
+    actor.send({ type: 'PICK', file: file() });
+    await waitFor(actor, (s) => s.matches('error'));
+    expect(lighterTier(actor.getSnapshot().context)).toBeNull();
+    actor.send({ type: 'FALLBACK_TIER' });
+    expect(actor.getSnapshot().matches('error')).toBe(true);
+    expect(actor.getSnapshot().context.tierOverride).toBeNull();
+  });
+
+  it('lighterTier follows the ladder from the engine tier, then the user pick, then the default', () => {
+    expect(lighterTier({ tier: null, tierOverride: null })).toBe('webgpu-lite');
+    expect(lighterTier({ tier: null, tierOverride: 'wasm-mt' })).toBe('wasm-st');
+    expect(lighterTier({ tier: 'wasm-mt', tierOverride: 'webgpu-lite' })).toBe('wasm-st');
+    expect(lighterTier({ tier: 'wasm-st', tierOverride: null })).toBeNull();
+  });
+});
+
+describe('engine notes and the init attempts the machine starts (M3 #27)', () => {
+  const warn = (engine: MockEngine) =>
+    (engine as unknown as { emit: (e: unknown) => void }).emit({
+      type: 'warning',
+      warning: { code: 'tier-fallback', message: 'slow' },
+    });
+
+  it('shows a note from app start in the clip, and drops it when the machine initialises the engine again', async () => {
+    const { actor, engine } = start();
+    await waitFor(actor, (s) => s.matches('landing'));
+    warn(engine);
+    actor.send({ type: 'PICK', file: file() });
+    await waitFor(actor, (s) => s.matches('results'));
+    expect(useSessionStore.getState().warnings.map((w) => w.code)).toContain('tier-fallback');
+    // the engine is lost; the next clip makes the app initialise it again, which forgets the note
+    useSessionStore.getState().clear();
+    const lost = vi.spyOn(engine, 'state', 'get').mockReturnValue('failed');
+    let initialised = false;
+    vi.spyOn(engine, 'init').mockImplementation(async () => {
+      initialised = true;
+      lost.mockRestore();
+      return { tier: 'webgpu-default' } as unknown as ReadyInfo;
+    });
+    actor.send({ type: 'NEW_CLIP' });
+    actor.send({ type: 'PICK', file: file() });
+    await waitFor(actor, (s) => s.matches('results'));
+    expect(initialised).toBe(true);
+    expect(useSessionStore.getState().warnings.map((w) => w.code)).not.toContain('tier-fallback');
   });
 });

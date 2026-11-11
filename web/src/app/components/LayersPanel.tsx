@@ -1,7 +1,7 @@
 import { Segmented } from '@/ui/segmented';
 import { Slider } from '@/ui/slider';
 import { Toggle } from '@/ui/toggle';
-import { useViewStore, type ViewState } from '../stores/view';
+import { useDrawStatus, useViewStore, type ViewState } from '../stores/view';
 
 type LayerKey = Parameters<ViewState['setLayer']>[0];
 
@@ -21,9 +21,24 @@ const FOCUS_LAYERS: readonly { key: LayerKey; label: string }[] = [
 
 type ColourChoice = 'identity' | 'side' | 'velocity';
 
+/** The note under the focus layers. It alone follows the draw loop's report, so a flip repaints this line only. */
+function FocusLayersNote({ focused, ghosts }: { focused: boolean; ghosts: boolean }) {
+  const still = useDrawStatus((s) => s.ghostsStill);
+  return (
+    <p className="text-[13px] text-text-2" data-testid="focus-layers-note">
+      {!focused
+        ? 'Pick a player on the video or in the list to see these.'
+        : ghosts && still
+          ? 'Ghosts need the player to move across the frame; this stretch does not.'
+          : 'Drawn for the player you picked.'}
+    </p>
+  );
+}
+
 /** What the overlay draws and how it is coloured. */
 export function LayersPanel() {
   const view = useViewStore();
+  const hasFocus = view.focusTrackId !== null;
   const colour: ColourChoice = view.velocityColor ? 'velocity' : view.colorMode;
   const pickColour = (next: ColourChoice) => {
     view.setVelocityColor(next === 'velocity');
@@ -49,13 +64,7 @@ export function LayersPanel() {
             </Toggle>
           ))}
         </fieldset>
-        <p className="text-[13px] text-text-2" data-testid="focus-layers-note">
-          {view.focusTrackId === null
-            ? 'Pick a player on the video or in the list to see these.'
-            : view.showGhosts && view.ghostsStill
-              ? 'Ghosts need the player to move across the frame; this stretch does not.'
-              : 'Drawn for the player you picked.'}
-        </p>
+        <FocusLayersNote focused={view.focusTrackId !== null} ghosts={view.showGhosts} />
       </div>
       <div className="flex flex-col gap-2">
         <p className="font-[550]">Colours</p>
@@ -65,10 +74,17 @@ export function LayersPanel() {
           options={[
             { value: 'identity', label: 'By player' },
             { value: 'side', label: 'Left / right' },
-            { value: 'velocity', label: 'By speed' },
+            // speed colours go to the focus player only: without one the choice would do nothing
+            { value: 'velocity', label: 'By speed', disabled: !hasFocus && colour !== 'velocity' },
           ]}
           onChange={pickColour}
+          describedBy="colour-note"
         />
+        <p id="colour-note" className="text-[13px] text-text-2" data-testid="colour-note">
+          {hasFocus
+            ? 'By speed colours the player you picked. Everyone else keeps the colours of your last By player or Left / right choice.'
+            : 'By speed needs a picked player: pick one on the video or in the list.'}
+        </p>
       </div>
       <div className="flex flex-col gap-2">
         <p className="font-[550]">Glow</p>

@@ -77,4 +77,24 @@ describe('renderFramePng', () => {
       expect(differing, JSON.stringify(extra)).toBeGreaterThan(60);
     }
   });
+
+  it('draws the same picture whatever the viewer prefers for motion (an export is content)', async () => {
+    const { info, video } = await mount(CLIP);
+    const swing = (t: number) => [440 + 200 * Math.sin(t * 9), 330 - 180 * Math.cos(t * 9)] as const;
+    const source = createFrameSource(
+      motionScene({ fps: 30, seconds: 3, body: (t) => [300 * t, 0], joints: { 10: swing } }),
+    );
+    const base = {
+      video,
+      source,
+      frameIndex: 60,
+      displayWidth: info.clip.displayWidth,
+      displayHeight: info.clip.displayHeight,
+      overlay: true,
+    };
+    const layers = { ...DEFAULT_RENDER_OPTIONS, focusTrackId: 1, showFocusTrails: true, showGhosts: true };
+    const full = await pixels(await renderFramePng({ ...base, options: { ...layers, reducedMotion: false } }));
+    const reduced = await pixels(await renderFramePng({ ...base, options: { ...layers, reducedMotion: true } }));
+    expect(reduced.data).toEqual(full.data);
+  });
 });

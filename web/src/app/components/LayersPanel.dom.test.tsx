@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { useThemeStore } from '@/ui/theme';
-import { useRenderOptions, useViewStore } from '../stores/view';
+import { setGhostsStill, useRenderOptions, useViewStore } from '../stores/view';
 import { LayersPanel } from './LayersPanel';
 
 beforeEach(() => useViewStore.getState().reset());
@@ -29,13 +29,14 @@ describe('LayersPanel focus layers', () => {
       const s = useViewStore.getState();
       s.setFocus(3);
       s.setLayer('showGhosts', true);
-      s.setGhostsStill(true);
+      setGhostsStill(true);
     });
     expect(screen.getByTestId('focus-layers-note').textContent).toMatch(/Ghosts need the player to move/);
   });
 
   it('turns the layers and the speed colours into renderer options', () => {
     render(<LayersPanel />);
+    act(() => useViewStore.getState().setFocus(1));
     const options = renderHook(() => useRenderOptions([1, 2]));
     expect(options.result.current).toMatchObject({ showFocusTrails: true, showGhosts: false, velocityColor: false });
     fireEvent.click(screen.getByRole('button', { name: 'Ghosts' }));
@@ -50,6 +51,37 @@ describe('LayersPanel focus layers', () => {
     });
     fireEvent.click(screen.getByRole('radio', { name: 'Left / right' }));
     expect(options.result.current).toMatchObject({ velocityColor: false, colorMode: 'side' });
+  });
+
+  it('disables By speed without a picked player and explains why', () => {
+    render(<LayersPanel />);
+    const speed = screen.getByRole('radio', { name: 'By speed' }) as HTMLInputElement;
+    expect(speed.disabled).toBe(true);
+    expect(speed.getAttribute('aria-describedby')).toBe('colour-note');
+    expect(screen.getByTestId('colour-note').textContent).toMatch(/needs a picked player/);
+    act(() => useViewStore.getState().setFocus(3));
+    expect(speed.disabled).toBe(false);
+    expect(screen.getByTestId('colour-note').textContent).toMatch(/colours the player you picked/);
+  });
+
+  it('keeps By speed selectable to switch away from it after the focus is dropped', () => {
+    render(<LayersPanel />);
+    act(() => {
+      useViewStore.getState().setFocus(3);
+      useViewStore.getState().setVelocityColor(true);
+      useViewStore.getState().setFocus(3);
+    });
+    expect((screen.getByRole('radio', { name: 'By speed' }) as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it('a ghostsStill flip does not re-render the layers panel or the view store subscribers', () => {
+    let renders = 0;
+    const off = useViewStore.subscribe(() => renders++);
+    render(<LayersPanel />);
+    act(() => setGhostsStill(true));
+    act(() => setGhostsStill(false));
+    off();
+    expect(renders).toBe(0);
   });
 
   it('passes reduced motion on to the renderer', () => {

@@ -9,6 +9,8 @@ export interface ProblemProps {
   readonly terminal?: boolean;
   readonly onRetry: () => void;
   readonly onFallbackTier: () => void;
+  /** A lighter processing mode exists below the one that failed; at the lowest there is none to offer. */
+  readonly canFallbackTier?: boolean;
   readonly onNewClip: () => void;
 }
 
@@ -27,7 +29,14 @@ const TECHNICAL: readonly EngineErrorCode[] = [
 const BROWSER_HINT = 'Try a recent version of Chrome or Edge on a computer. Safari on a Mac works for most clips.';
 
 /** Error and unsupported states with the one action the taxonomy asks for (plan §3.13). */
-export function Problem({ error, terminal = false, onRetry, onFallbackTier, onNewClip }: ProblemProps) {
+export function Problem({
+  error,
+  terminal = false,
+  onRetry,
+  onFallbackTier,
+  canFallbackTier = true,
+  onNewClip,
+}: ProblemProps) {
   const { title } = ERROR_DEFAULTS[error.code];
   const primary = (() => {
     switch (error.action) {
@@ -38,9 +47,14 @@ export function Problem({ error, terminal = false, onRetry, onFallbackTier, onNe
           </Button>
         );
       case 'fallback-tier':
-        return (
+        // already on the lightest mode: only a reload or another browser can help
+        return canFallbackTier ? (
           <Button variant="primary" onClick={onFallbackTier}>
             Try a lighter mode
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={() => window.location.reload()}>
+            Reload the page
           </Button>
         );
       case 'reload':
@@ -69,7 +83,11 @@ export function Problem({ error, terminal = false, onRetry, onFallbackTier, onNe
           <h1 className="font-semibold text-[28px] leading-tight tracking-tight">{title}</h1>
           {error.message !== title && !TECHNICAL.includes(error.code) && <p className="text-text-2">{error.message}</p>}
         </div>
-        {error.action === 'change-browser' && <p className="text-text-2">{BROWSER_HINT}</p>}
+        {(error.action === 'change-browser' || (error.action === 'fallback-tier' && !canFallbackTier)) && (
+          <p className="text-text-2" data-testid="browser-hint">
+            {BROWSER_HINT}
+          </p>
+        )}
         <div className="flex flex-wrap gap-2">
           {primary}
           {!terminal && error.action !== 'choose-another-file' && (

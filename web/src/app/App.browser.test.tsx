@@ -3,7 +3,7 @@ import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { saveBlob } from './export/download';
-import { useSessionStore } from './stores/session';
+import { isPartialResult, useSessionStore } from './stores/session';
 import { useSettingsStore } from './stores/settings';
 import { useUiStore } from './stores/ui';
 import { useViewStore } from './stores/view';
@@ -88,7 +88,10 @@ describe('app flow on the mock engine', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^Keep \d+% analysed$/ }));
     await waitFor(() => expect(screen.queryByTestId('processing-pill')).toBeNull());
     expect(screen.getByRole('slider', { name: 'Timeline' })).toBeTruthy();
-    expect(useSessionStore.getState().final).toBeNull();
+    // the engine's partial result replaces the streamed view: partial, with the "only N% analysed" cue
+    await waitFor(() => expect(useSessionStore.getState().final).not.toBeNull());
+    expect(isPartialResult(useSessionStore.getState().final)).toBe(true);
+    expect(screen.getByTestId('partial-cue').textContent).toMatch(/^Partial: only \d+% analysed$/);
   }, 60_000);
 
   it('exports the kept partial result, with the files marked as partial', async () => {

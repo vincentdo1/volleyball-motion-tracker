@@ -16,7 +16,7 @@ import type { PlayerController } from '../player/controller';
 import { usePlayerShortcuts } from '../player/shortcuts';
 import { VideoStage } from '../player/VideoStage';
 import { trackInfos } from '../results/tracks';
-import { trackIdsOf, useSessionStore } from '../stores/session';
+import { isPartialResult, trackIdsOf, useSessionStore } from '../stores/session';
 import type { HintId } from '../stores/settings';
 import { useUiStore } from '../stores/ui';
 import { useRenderOptions, useViewStore } from '../stores/view';
@@ -32,7 +32,7 @@ export interface ResultsProps {
 /** Player, transport, per-player timeline and the Players / Layers / Data panel (05 §4.4-4.5). */
 export function Results({ engine, analyzing, onCancel, onNewClip }: ResultsProps) {
   const session = useSessionStore();
-  const { clip, frameTable, videoUrl, source, lanes, revision, final, processedFrames } = session;
+  const { clip, frameTable, videoUrl, source, lanes, revision, final, processedFrames, kept } = session;
   const focusTrackId = useViewStore((s) => s.focusTrackId);
   const hiddenTrackIds = useViewStore((s) => s.hiddenTrackIds);
   const setFocus = useViewStore((s) => s.setFocus);
@@ -64,7 +64,8 @@ export function Results({ engine, analyzing, onCancel, onNewClip }: ResultsProps
   if (!clip || !stageFrames || !videoUrl) return null;
 
   const percent = Math.round((processedFrames / Math.max(1, stageFrames.ptsUs.length)) * 100);
-  const noPlayers = !analyzing && final !== null && tracks.length === 0;
+  const partialView = !analyzing && (final ? isPartialResult(final) : kept);
+  const noPlayers = !analyzing && final !== null && !partialView && tracks.length === 0;
   const readyHints: HintId[] = [];
   if (tracks.length > 0) readyHints.push('focus-player', 'frame-step');
   if (final) readyHints.push('export');
@@ -100,9 +101,19 @@ export function Results({ engine, analyzing, onCancel, onNewClip }: ResultsProps
         {analyzing ? (
           <ProcessingPill onCancel={() => setConfirmingCancel(true)} />
         ) : (
-          <p className="hidden min-w-0 truncate text-text-2 md:block" title={clip.name}>
-            {clip.name}
-          </p>
+          <>
+            <p className="hidden min-w-0 truncate text-text-2 md:block" title={clip.name}>
+              {clip.name}
+            </p>
+            {partialView && (
+              <span
+                className="shrink-0 rounded-pill border border-border bg-surface-1 px-3 py-1 text-[13px] font-[550]"
+                data-testid="partial-cue"
+              >
+                Partial: only {percent}% analysed
+              </span>
+            )}
+          </>
         )}
       </AppHeader>
 

@@ -12,7 +12,7 @@ import { renderFramePng } from '../export/png';
 import { fileStem } from '../format';
 import { useMediaQuery } from '../hooks';
 import type { PlayerController } from '../player/controller';
-import { useSessionStore } from '../stores/session';
+import { isPartialResult, useSessionStore } from '../stores/session';
 import { useUiStore } from '../stores/ui';
 
 type Kind = 'mp4' | 'png' | 'json' | 'csv';
@@ -77,8 +77,10 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
   const final = useSessionStore((s) => s.final);
   const kept = useSessionStore((s) => s.kept);
   const processedFrames = useSessionStore((s) => s.processedFrames);
-  const partial = kept && !final;
-  const available = final !== null || (partial && processedFrames > 0);
+  const partialPending = useSessionStore((s) => s.partialPending);
+  const partial = final ? isPartialResult(final) : kept;
+  // a kept run waits for the engine's partial result: its ids and colours are the ones the files will have
+  const available = final !== null || (partial && !partialPending && processedFrames > 0);
   const analysedPercent = clip && clip.frameCount > 0 ? Math.floor((processedFrames / clip.frameCount) * 100) : 0;
   const [busy, setBusy] = useState<Kind | null>(null);
   const [percent, setPercent] = useState(0);
@@ -150,7 +152,9 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
                   <p className="font-[550]">{title}</p>
                   <p className="text-[13px] text-text-2">
                     {locked
-                      ? 'Available when the analysis finishes'
+                      ? partialPending
+                        ? 'Preparing what was analysed…'
+                        : 'Available when the analysis finishes'
                       : needsResult && partial
                         ? `Partial: ${detail}`
                         : detail}

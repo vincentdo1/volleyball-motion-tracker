@@ -10,7 +10,7 @@ import { SettingsSheet } from './components/SettingsSheet';
 import { ShortcutsSheet } from './components/ShortcutsSheet';
 import { runCapabilityCheck } from './diagnostics';
 import { createAppEngine } from './engine-factory';
-import { appMachine } from './machine';
+import { appMachine, lighterTier } from './machine';
 import { About } from './screens/About';
 import { Landing } from './screens/Landing';
 import { Problem } from './screens/Problem';
@@ -44,6 +44,7 @@ export function App() {
   const state = useSelector(actor, (s) => s.value);
   const error = useSelector(actor, (s) => s.context.error);
   const resume = useSelector(actor, (s) => s.context.resume);
+  const canFallbackTier = useSelector(actor, (s) => lighterTier(s.context) !== null);
   const durationS = useSessionStore((s) => (s.clip ? s.clip.durationUs / 1e6 : 0));
 
   useEffect(() => startAppearanceSync(), []);
@@ -79,6 +80,7 @@ export function App() {
             terminal={state === 'unsupported'}
             onRetry={() => actor.send({ type: 'RETRY' })}
             onFallbackTier={() => actor.send({ type: 'FALLBACK_TIER' })}
+            canFallbackTier={canFallbackTier}
             onNewClip={() => actor.send({ type: 'NEW_CLIP' })}
           />
         ) : null;

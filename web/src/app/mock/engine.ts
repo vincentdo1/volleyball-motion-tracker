@@ -243,6 +243,8 @@ export class MockEngine implements EngineApi {
     this.analysed = 0;
     this.setState('processing');
     const run = ++this.runId;
+    // the mock always analyses from the start, so every run begins a fresh stream
+    this.emit({ type: 'run-started', fresh: true, resumedFrames: 0 });
     void this.process(run);
   }
 
@@ -441,20 +443,29 @@ export class MockEngine implements EngineApi {
     return result;
   }
 
-  /** The result of the frames analysed so far, or null when there are none. */
+  /**
+   * The result of the frames analysed so far, or null when there are none. Like the real engine's: the whole frame
+   * table (frames not analysed are flagged skipped), only the analysed samples, `extensions.partial` set.
+   */
   private buildPartialResult(): FinalResult | null {
     const { scene, clip, analysed } = this;
     if (!scene || !clip || analysed === 0) return null;
     const full = this.buildFinal(scene, clip.clip, this.deps.now());
     const { frames, ball } = full;
-    const untilUs = (frames.ptsUs[analysed - 1] as number) + 1;
+    const untilUs = (frames.ptsUs[analysed - 1] as number) + (frames.durationUs[analysed - 1] as number);
+    const total = frames.ptsUs.length;
+    const flags = frames.flags.slice();
+    flags.fill(FrameFlag.SKIPPED, analysed);
+    const visibility = ball?.visibility.slice();
+    const xy = ball?.xy.slice();
+    visibility?.fill(0, analysed);
+    xy?.fill(Number.NaN, analysed * 2);
     return {
-      header: full.header,
-      frames: {
-        ptsUs: frames.ptsUs.slice(0, analysed),
-        durationUs: frames.durationUs.slice(0, analysed),
-        flags: frames.flags.slice(0, analysed),
+      header: {
+        ...full.header,
+        extensions: { partial: { analysedFrames: analysed, plannedFrames: total, analysedUntilUs: untilUs } },
       },
+      frames: { ptsUs: frames.ptsUs, durationUs: frames.durationUs, flags },
       tracks: full.tracks.flatMap((track) => {
         const n = track.ptsUs.findIndex((pts) => pts >= untilUs);
         const count = n < 0 ? track.ptsUs.length : n;
@@ -471,14 +482,7 @@ export class MockEngine implements EngineApi {
           },
         ];
       }),
-      ball: ball && {
-        ptsUs: ball.ptsUs.slice(0, analysed),
-        xy: ball.xy.slice(0, analysed * 2),
-        radius: ball.radius.slice(0, analysed),
-        confidence: ball.confidence.slice(0, analysed),
-        visibility: ball.visibility.slice(0, analysed),
-        source: ball.source.slice(0, analysed),
-      },
+      ball: ball && { ...ball, xy: xy as Float32Array, visibility: visibility as Uint8Array },
     };
   }
 

@@ -1,52 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { ClipMetadata } from '@/contracts/posetrack';
-import { BallSource, BallVisibility } from '@/contracts/posetrack';
-import { packFrames } from '@/contracts/posetrack-codec';
 import type { ProgressInfo } from '@/contracts/protocol';
 import { createFrameSource } from '@/render';
-import { syntheticScene } from '@/render/synthetic';
 import { useSessionStore } from '../stores/session';
+import { batchOf, testScene } from '../testing';
 import { EtaSmoother, formatEta } from './eta';
 import { BallLane, computeLanes, LaneLevel } from './lanes';
 import { StreamingResults } from './streaming';
 
-const scene = syntheticScene({ width: 1280, height: 720, fps: 30, frameCount: 24, players: 4, variety: true });
-
-function batchOf(from: number, to: number) {
-  return packFrames(
-    Array.from({ length: to - from }, (_, k) => {
-      const i = from + k;
-      const pts = scene.frames.ptsUs[i] as number;
-      return {
-        ptsUs: pts,
-        durationUs: scene.frames.durationUs[i] as number,
-        flags: 1,
-        persons: scene.tracks.flatMap((t) => {
-          const s = t.ptsUs.indexOf(pts);
-          return s < 0
-            ? []
-            : [
-                {
-                  trackId: t.id,
-                  box: t.box.subarray(s * 4, s * 4 + 4),
-                  boxScore: 0.9,
-                  keypoints: t.kp.subarray(s * 78, s * 78 + 78),
-                  kpFlags: t.kpFlags.subarray(s * 26, s * 26 + 26),
-                },
-              ];
-        }),
-        ball: {
-          x: scene.ball.xy[i * 2] as number,
-          y: scene.ball.xy[i * 2 + 1] as number,
-          radius: 8,
-          confidence: 0.8,
-          visibility: BallVisibility.VISIBLE,
-          source: BallSource.VBALLNET,
-        },
-      };
-    }),
-  );
-}
+const scene = testScene;
 
 describe('StreamingResults', () => {
   it('serves only the frames received so far and fills the lanes incrementally', () => {
@@ -129,21 +91,26 @@ describe('session chunks and progress (M2-18)', () => {
     etaS: null,
   });
 
-  it('starts the pill from the frames the engine skipped on a resumed run, not from chunks received', () => {
+  it('takes the progress from the chunks delivered, not from the engine counter (it runs ahead of them)', () => {
     begin();
-    session().setProgress(progress(8), null);
+    session().setProgress(progress(20), 3);
+    expect(session().processedFrames).toBe(0);
+    expect(session().etaS).toBe(3);
+    session().addChunk(batchOf(0, 8), 0);
     expect(session().processedFrames).toBe(8);
-    session().setProgress(progress(12), null);
-    expect(session().processedFrames).toBe(12);
-    session().setProgress(progress(3), null);
-    expect(session().processedFrames).toBe(12);
+    session().setProgress(progress(24), 1);
+    expect(session().processedFrames).toBe(8);
   });
 
-  it('ignores warm-up progress and clamps to the clip length', () => {
+  it('starts the pill from the frames a resumed run had analysed, and keeps what it holds', () => {
     begin();
-    session().setProgress(progress(20, 'warmup'), null);
-    expect(session().processedFrames).toBe(0);
-    session().setProgress(progress(99), null);
+    session().addChunk(batchOf(0, 8), 0);
+    session().runStarted(false, 16);
+    expect(session().processedFrames).toBe(16);
+    expect(session().lanes?.players.size).toBeGreaterThan(0);
+    session().runStarted(false, 99);
+    expect(session().processedFrames).toBe(24);
+    session().runStarted(false, 4);
     expect(session().processedFrames).toBe(24);
   });
 
@@ -158,18 +125,41 @@ describe('session chunks and progress (M2-18)', () => {
     expect(session().lanes?.players.size).toBeGreaterThan(0);
   });
 
-  it('accepts sequence numbers again when a new run starts', () => {
+  it('drops the streamed results, seqs and progress when a fresh run starts', () => {
     begin();
-    session().addChunk(batchOf(0, 8), 0);
-    session().beginRun();
+    session().addChunk(batchOf(0, 16), 0);
+    session().setProgress(progress(16), 2);
+    const before = session();
+    session().runStarted(true, 0);
+    expect(session().processedFrames).toBe(0);
+    expect(session().progress).toBeNull();
+    expect(session().source).not.toBe(before.source);
+    expect(session().lanes?.players.size).toBe(0);
     const revision = session().revision;
     session().addChunk(batchOf(0, 8), 0);
     expect(session().revision).toBe(revision + 1);
+    expect(session().processedFrames).toBe(8);
+    expect(session().lanes?.players.size).toBeGreaterThan(0);
+  });
+
+  it('applies a batch of chunks in one update', () => {
+    begin();
+    let updates = 0;
+    const off = useSessionStore.subscribe(() => updates++);
+    session().addChunks([
+      { batch: batchOf(0, 8), seq: 0 },
+      { batch: batchOf(8, 16), seq: 1 },
+      { batch: batchOf(16, 24), seq: 2 },
+      { batch: batchOf(0, 8), seq: 0 },
+    ]);
+    off();
+    expect(updates).toBe(1);
+    expect(session().processedFrames).toBe(24);
   });
 
   it('never lowers the processed frames when an older chunk arrives after progress', () => {
     begin();
-    session().setProgress(progress(16), null);
+    session().addChunk(batchOf(8, 16), 1);
     session().addChunk(batchOf(0, 8), 0);
     expect(session().processedFrames).toBe(16);
   });

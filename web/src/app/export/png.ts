@@ -14,7 +14,10 @@ export interface FramePngInput {
   readonly overlay: boolean;
 }
 
-/** The shown video frame, with the skeleton overlay drawn on top at the clip's own resolution. */
+/**
+ * The shown video frame, with the skeleton overlay drawn on top at the clip's own resolution. An export is content,
+ * not playback: it is drawn with full trails and ghosts like the MP4 whatever the viewer's reduced-motion preference.
+ */
 export async function renderFramePng(input: FramePngInput): Promise<Blob> {
   const { video, source, frameIndex, options, displayWidth, displayHeight, overlay } = input;
   const canvas = document.createElement('canvas');
@@ -30,7 +33,7 @@ export async function renderFramePng(input: FramePngInput): Promise<Blob> {
         ctx,
         source.frameAt(frameIndex),
         containTransform(displayWidth, displayHeight, displayWidth, displayHeight, 1),
-        options,
+        { ...options, reducedMotion: false },
       );
     } finally {
       renderer.dispose();
