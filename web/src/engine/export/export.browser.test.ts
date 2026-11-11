@@ -187,6 +187,44 @@ describe('exporting a kept partial result (M2-4)', () => {
     out.dispose();
   }, 60_000);
 
+  it('hands the app the result the exports are made from: same track ids and colour slots, built once', async () => {
+    const { api } = await cancelled('volleyball_spike_attempt_04.mp4');
+    const finals: EngineEventOf<'final'>[] = [];
+    api.on('final', (e) => finals.push(e));
+    const result = await api.partialResult();
+    expect(result).not.toBeNull();
+    expect(finals.map((f) => f.result)).toEqual([result]);
+    expect(result?.header.extensions?.partial).toBeDefined();
+    const doc = JSON.parse(await (await api.exportResult({ kind: 'json' })).blob.text()) as PoseTrackDocument;
+    expect(doc.tracks.map((t) => [t.id, t.colorSlot])).toEqual(result?.tracks.map((t) => [t.id, t.colorSlot]));
+    const again = await api.partialResult();
+    expect(again?.tracks.map((t) => [t.id, t.colorSlot])).toEqual(result?.tracks.map((t) => [t.id, t.colorSlot]));
+    expect(Array.from(again?.frames.ptsUs ?? [])).toEqual(Array.from(result?.frames.ptsUs ?? []));
+    // The CSV rows carry the track ids of the result the app shows.
+    const csv = (await (await api.exportResult({ kind: 'csv' })).blob.text()).trimEnd().split('\n');
+    const csvIds = new Set(
+      csv
+        .slice(1)
+        .filter((l) => l.split(',')[2] === 'person')
+        .map((l) => Number(l.split(',')[3])),
+    );
+    expect([...csvIds].sort()).toEqual((result?.tracks ?? []).map((t) => t.id).sort());
+  }, 60_000);
+
+  it('has no partial result when nothing was analysed, or after another clip was opened', async () => {
+    const api = createStubEngine({ ml: { delayMs: 300 } });
+    engine = api;
+    await api.init({ tierOverride: 'webgpu-default' });
+    await api.open(await fixtureFile('volleyball_spike_attempt_04.mp4'));
+    await api.start();
+    await api.cancel();
+    expect(await api.partialResult()).toBeNull();
+    const { api: second } = await cancelled('volleyball_spike_attempt_04.mp4');
+    expect(await second.partialResult()).not.toBeNull();
+    await second.open(await fixtureFile('volleyball_spike_attempt_03.mp4'));
+    expect(await second.partialResult()).toBeNull();
+  }, 60_000);
+
   it('refuses to export when nothing was analysed, and does not export another clip after a new open', async () => {
     const api = createStubEngine();
     engine = api;

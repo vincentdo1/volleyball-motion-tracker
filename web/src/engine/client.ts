@@ -4,7 +4,7 @@
  * recovers (lost GPU, stall, failed WebGPU inference) by restarting the worker, stepping down a tier where the
  * failure calls for it, and resuming from the stored checkpoint (plan §3.4).
  */
-import type { DeviceTierId } from '@/contracts/capabilities';
+import { DEVICE_TIERS, type DeviceTierId } from '@/contracts/capabilities';
 import type { EngineError, EngineWarning } from '@/contracts/errors';
 import { engineError } from '@/contracts/errors';
 import type { FinalResult } from '@/contracts/posetrack';
@@ -35,6 +35,8 @@ export interface EngineClientOptions {
   readonly stallFloorMs?: number;
   /** The clock of the stall supervisor (default: a worker timer, immune to throttling of a hidden tab). */
   readonly startTicker?: StartTicker;
+  /** Overrides the awake-time ceiling for `finalizing` (tests shorten it). */
+  readonly finalizeCeilingMs?: number;
 }
 
 /** Two GPU losses inside this window step the engine down to a CPU tier. */
@@ -48,6 +50,13 @@ const LOSS_WINDOW_MS = 60_000;
  */
 const STALL_FLOOR_MS = 12_000;
 const STALL_POLL_MS = 1000;
+/**
+ * Finalising (stitching, smoothing, writing the result) is one long computation with no pulse to follow, so it gets an
+ * awake-time ceiling instead of a silence limit: `FINALIZE_FLOOR_MS` plus `FINALIZE_MS_PER_CLIP_SECOND` for every
+ * second of the clip. See the engine README for the measurements it is set from.
+ */
+export const FINALIZE_FLOOR_MS = 60_000;
+export const FINALIZE_MS_PER_CLIP_SECOND = 2000;
 
 /** What a recovery restarts the engine with, and what it tells the user. */
 interface RecoveryPlan {
@@ -92,6 +101,12 @@ class EngineClient implements EngineApi {
   private readonly ticker: StartTicker;
   /** Stalls of the current run so far. */
   private stalls = 0;
+  /** The `state: failed` and `error` events of an init that may be retried on a CPU tier; null when not holding. */
+  private held: EngineEvent[] | null = null;
+  /** The recovery in progress, so a cancel can wait for it. */
+  private recoveryDone: Promise<void> | null = null;
+  /** `cancel()` was called while a recovery ran: the recovery ends before it restarts anything. */
+  private cancelRequested = false;
 
   constructor(private readonly options: EngineClientOptions) {
     this.silence = new Watchdog(options.stallFloorMs ?? STALL_FLOOR_MS, COLD_START_LIMIT_MS);
@@ -109,11 +124,52 @@ class EngineClient implements EngineApi {
     return () => set.delete(listener as Listener);
   }
 
+  /**
+   * Starts the engine. When the first inference on a WebGPU tier fails (the device cannot run the shaders, Firefox
+   * M2-10), the worker is terminated, which frees the whole WebGPU runtime, and a fresh one starts on the CPU tier
+   * below; later recoveries stay on that tier. Any other failure is the caller's.
+   */
   async init(options: InitOptions = {}): Promise<ReadyInfo> {
     this.initOptions = options;
-    await this.send((requestId) => ({ type: 'init', requestId, protocolVersion: PROTOCOL_VERSION, options }));
+    const first = await this.initWorker(options, true);
+    if ('ready' in first) return first.ready;
+    this.terminate();
+    this.generation++;
+    this.initOptions = { ...options, tierOverride: first.cpuTier };
+    const second = await this.initWorker(this.initOptions, false);
+    if (!('ready' in second))
+      throw new EngineException(engineError('internal', 'The engine did not report readiness.'));
+    this.dispatch({
+      type: 'warning',
+      warning: {
+        code: 'slow-mode',
+        message:
+          "Your graphics card can't run the analysis models, so Skeletal uses the processor instead. It works, just slower.",
+        detail: { tier: first.cpuTier, reason: 'gpu-inference-failed' },
+      },
+    });
+    return second.ready;
+  }
+
+  private async initWorker(
+    options: InitOptions,
+    mayStepDown: boolean,
+  ): Promise<{ ready: ReadyInfo } | { cpuTier: DeviceTierId }> {
+    this.ready = null;
+    this.held = [];
+    try {
+      await this.send((requestId) => ({ type: 'init', requestId, protocolVersion: PROTOCOL_VERSION, options }));
+    } catch (error) {
+      const held = this.held;
+      this.held = null;
+      const cpuTier = mayStepDown ? gpuWarmupFallback(error) : null;
+      if (cpuTier) return { cpuTier };
+      for (const event of held ?? []) this.dispatch(event);
+      throw error;
+    }
+    this.held = null;
     if (!this.ready) throw new EngineException(engineError('internal', 'The engine did not report readiness.'));
-    return this.ready;
+    return { ready: this.ready };
   }
 
   async open(file: File): Promise<OpenedInfo> {
@@ -136,13 +192,48 @@ class EngineClient implements EngineApi {
     return this.send((requestId) => ({ type: 'resume', requestId }));
   }
 
+  /**
+   * Stops the run. While the client is recovering (restarting the worker after a failure) the cancel wins: the
+   * recovery ends before it restarts anything, or cancels the run it just restarted, and this resolves once the
+   * engine has settled (`opened`, or `ready` when the clip was never reopened). Rejects with `invalid-state` only
+   * when there is nothing to cancel.
+   */
   async cancel(): Promise<void> {
-    await this.send((requestId) => ({ type: 'cancel', requestId }));
+    if (this.recovering) return this.cancelRecovery();
+    if (!this.worker) throw new EngineException(engineError('invalid-state', 'There is no run to cancel.'));
+    try {
+      await this.send((requestId) => ({ type: 'cancel', requestId }));
+    } catch (error) {
+      // A failure took the worker down while the cancel was in flight: the recovery it started is what to stop.
+      if (this.recovering) return this.cancelRecovery();
+      throw error;
+    }
     this.startOptions = null;
   }
 
-  partialResult(): Promise<FinalResult | null> {
-    return Promise.reject(new EngineException(engineError('invalid-state', 'Partial results are not available yet.')));
+  private async cancelRecovery(): Promise<void> {
+    this.cancelRequested = true;
+    this.startOptions = null;
+    await this.recoveryDone;
+    this.startOptions = null;
+  }
+
+  /**
+   * After a cancel: the analysed part of the run, finalized once and cached by the engine (the partial exports are made
+   * from the same result), delivered here and as a `final` event. null when nothing was analysed or the run was
+   * discarded.
+   */
+  async partialResult(): Promise<FinalResult | null> {
+    let result = null as FinalResult | null;
+    const stop = this.on('final', (event) => {
+      result = event.result;
+    });
+    try {
+      await this.send((requestId) => ({ type: 'partial-result', requestId }));
+    } finally {
+      stop();
+    }
+    return result;
   }
 
   /** Cancel with `signal`: the call then rejects with an `export-failed` error whose `detail.cancelled` is true. */
@@ -197,7 +288,7 @@ class EngineClient implements EngineApi {
   private terminate(): void {
     this.worker?.terminate();
     this.worker = null;
-    this.watchStall(false);
+    this.supervise(null);
   }
 
   private send(build: (requestId: number) => EngineCommand): Promise<void> {
@@ -221,7 +312,7 @@ class EngineClient implements EngineApi {
       }
       case 'state':
         this.current = event.state;
-        this.watchStall(event.state === 'processing');
+        this.supervise(event.state);
         if (!this.recovering && ['opened', 'done', 'ready'].includes(event.state)) {
           this.startOptions = null;
           this.stalls = 0;
@@ -243,6 +334,10 @@ class EngineClient implements EngineApi {
       }
       default:
         break;
+    }
+    if (this.held && (event.type === 'error' || (event.type === 'state' && event.state === 'failed'))) {
+      this.held.push(event);
+      return;
     }
     this.dispatch(event);
     if (event.type === 'chunk') this.worker?.postMessage({ type: 'ack', seq: event.seq } satisfies EngineCommand);
@@ -289,21 +384,38 @@ class EngineClient implements EngineApi {
   private heard(event: EngineEvent): void {
     // `stats` is a diagnostics heartbeat from a timer in the worker: it keeps coming while the pipeline is stuck.
     if (event.type === 'stats') return;
-    if (event.type === 'progress' && this.stopStallTicker !== undefined) this.silence.observe(this.meter.tick());
+    if (event.type === 'progress' && this.current === 'processing' && this.stopStallTicker !== undefined) {
+      this.silence.observe(this.meter.tick());
+    }
     this.meter.reset();
   }
 
-  /** Watches the worker for silence while it processes; any other state needs no supervision. */
-  private watchStall(processing: boolean): void {
+  /** Watches the worker while it processes (for silence) and while it finalizes (for a ceiling); other states need none. */
+  private supervise(state: EngineState | null): void {
     this.stopStallTicker?.();
     this.stopStallTicker = undefined;
-    if (!processing) return;
+    if (state !== 'processing' && state !== 'finalizing') return;
     this.silence.reset();
     this.meter.reset();
     this.stopStallTicker = this.ticker(STALL_POLL_MS, () => this.checkStall());
   }
 
+  /** Awake time `finalizing` may take for the clip being processed. */
+  private finalizeCeilingMs(): number {
+    if (this.options.finalizeCeilingMs !== undefined) return this.options.finalizeCeilingMs;
+    const clipSeconds = (this.opened?.clip.durationUs ?? 0) / 1e6;
+    return FINALIZE_FLOOR_MS + FINALIZE_MS_PER_CLIP_SECOND * clipSeconds;
+  }
+
   private checkStall(): void {
+    if (this.current === 'finalizing') {
+      if (this.meter.tick() < this.finalizeCeilingMs()) return;
+      this.abort(
+        engineError('worker-crashed', 'Finishing the analysis took too long.', { reason: 'finalize-timeout' }),
+      );
+      return;
+    }
+    if (this.current !== 'processing') return;
     if (this.meter.tick() < this.silence.limitMs()) return;
     const plan = this.canRecover() ? this.recoveryPlan('stalled') : null;
     if (plan) void this.recover(plan);
@@ -367,26 +479,51 @@ class EngineClient implements EngineApi {
     }
   }
 
-  private async recover(plan: RecoveryPlan): Promise<void> {
+  private recover(plan: RecoveryPlan): Promise<void> {
     this.recovering = true;
+    this.cancelRequested = false;
+    const done = this.restart(plan).finally(() => {
+      this.recovering = false;
+      this.recoveryDone = null;
+    });
+    this.recoveryDone = done;
+    return done;
+  }
+
+  /**
+   * Restarts the worker and resumes the run. A `cancel()` that arrives meanwhile wins: it is checked before each step
+   * that would restart something, and a run that was already restarted is cancelled at once. Never rejects.
+   */
+  private async restart(plan: RecoveryPlan): Promise<void> {
     const { file, startOptions } = this;
+    // The tier the failed worker actually ran on stays pinned: a recovery that detects it again could pick the GPU
+    // tier that just failed (the worker's own choice is not known here otherwise).
+    const tier = plan.tier ?? this.ready?.tier;
     try {
       this.failPending(engineError('gpu-lost', 'The engine is restarting.'));
       this.terminate();
       this.generation++;
-      if (plan.tier) this.initOptions = { ...this.initOptions, tierOverride: plan.tier };
+      if (tier) this.initOptions = { ...this.initOptions, tierOverride: tier };
       if (plan.warning) this.dispatch({ type: 'warning', warning: plan.warning });
       await this.init(this.initOptions);
-      if (file) {
-        await this.open(file);
-        if (startOptions) await this.start({ ...startOptions, resume: true });
-      }
+      if (this.cancelRequested || !file) return;
+      await this.open(file);
+      if (this.cancelRequested || !startOptions) return;
+      await this.start({ ...startOptions, resume: true });
+      if (this.cancelRequested) await this.send((requestId) => ({ type: 'cancel', requestId })).catch(() => undefined);
     } catch (error) {
-      this.dispatch({ type: 'error', error: toEngineError(error) });
-    } finally {
-      this.recovering = false;
+      if (!this.cancelRequested) this.dispatch({ type: 'error', error: toEngineError(error) });
     }
   }
+}
+
+function gpuWarmupFallback(error: unknown): DeviceTierId | null {
+  const { code, detail } = toEngineError(error);
+  if (code !== 'inference-failed' || detail?.phase !== 'warmup' || detail.backend !== 'webgpu') return null;
+  const tier = detail.tier;
+  if (typeof tier !== 'string' || !(tier in DEVICE_TIERS)) return null;
+  const cpu = cpuTierBelow(tier as DeviceTierId, detail.crossOriginIsolated === true);
+  return DEVICE_TIERS[cpu].backend === 'wasm' ? cpu : null;
 }
 
 /** The failures a restart can cure; a timeout counts as a stall. */

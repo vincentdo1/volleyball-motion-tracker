@@ -48,6 +48,10 @@ export interface StubMlOptions {
   readonly blockWhenConcurrent?: boolean;
   /** `process()` rejects with a raw runtime error (not an engine error) at this PTS. */
   readonly rawFailAtPtsUs?: number;
+  /** `finalize()` blocks the worker thread (a finalisation that never ends: the client's ceiling must catch it). */
+  readonly blockFinalize?: boolean;
+  /** Called by every `finalize()` (in-page cores only: a function does not survive the worker name). */
+  readonly onFinalize?: () => void;
 }
 
 /** Like the ML module's `InferenceError`: an `Error` that carries the `EngineError` fields itself. */
@@ -252,6 +256,10 @@ export function createStubMl(options: StubMlOptions = {}): MlModule {
     sessionOptions: (_role, backend) => ({ executionProviders: [backend === 'webgpu' ? 'webgpu' : 'wasm'] }),
     createFramePipeline: async (runtime, settings) => createStubPipeline(options, settings, runtime.backend),
     createOnlineTracker: createStubTracker,
-    finalize: finalizeStub,
+    finalize: (input) => {
+      options.onFinalize?.();
+      if (options.blockFinalize) blockThread();
+      return finalizeStub(input);
+    },
   };
 }

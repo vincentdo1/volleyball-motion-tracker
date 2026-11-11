@@ -7,6 +7,8 @@ import type { PreparedRuntime, RuntimeProvider, RuntimeRequest } from '../core/r
 export interface StubRuntimeOptions {
   /** Resolves `deviceLost` after this many ms of being busy (simulated GPU reset). */
   readonly loseDeviceAfterMs?: number;
+  /** Called with 'prepared' for every runtime set loaded and 'disposed' for every one released (in-page cores only). */
+  readonly onLifecycle?: (event: 'prepared' | 'disposed') => void;
 }
 
 const session = {} as InferenceSession;
@@ -58,6 +60,7 @@ export function createStubRuntimeProvider(options: StubRuntimeOptions = {}): Run
         lose = resolve;
       });
       let timer: ReturnType<typeof setTimeout> | undefined;
+      options.onLifecycle?.('prepared');
       return {
         runtime,
         models: infos,
@@ -68,7 +71,10 @@ export function createStubRuntimeProvider(options: StubRuntimeOptions = {}): Run
             timer = setTimeout(() => lose('stub: device lost'), options.loseDeviceAfterMs);
           }
         },
-        dispose: async () => clearTimeout(timer),
+        dispose: async () => {
+          clearTimeout(timer);
+          options.onLifecycle?.('disposed');
+        },
       };
     },
   };

@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { FrameFlag } from '@/contracts/posetrack';
-import type { EngineApi, EngineEvent, EngineEventOf, EngineStats } from '@/contracts/protocol';
+import {
+  type EngineApi,
+  type EngineEvent,
+  type EngineEventOf,
+  type EngineStats,
+  PROTOCOL_VERSION,
+} from '@/contracts/protocol';
 import type { EngineHandle } from '../client';
 import { createInPageCore } from '../testing/in-page-core';
 import { createStubEngine, fixtureFile } from '../testing/stub-engine';
@@ -150,7 +156,7 @@ describe('chunk transfer and backpressure (core on the test page)', () => {
     await page.call((requestId) => ({
       type: 'init',
       requestId,
-      protocolVersion: 1,
+      protocolVersion: PROTOCOL_VERSION,
       options: { tierOverride: 'webgpu-default' },
     }));
     const file = await fixtureFile(clip);

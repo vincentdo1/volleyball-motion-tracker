@@ -1,3 +1,6 @@
+/** `Worker.name` of the supervisor's timer worker (the engine worker is named `engine`). */
+export const TICKER_WORKER_NAME = 'skeletal-ticker';
+
 /** Stops a ticker. */
 export type StopTicker = () => void;
 
@@ -14,6 +17,7 @@ export type StartTicker = (everyMs: number, onTick: () => void) => StopTicker;
  * Falls back to `setInterval` where a worker cannot be made (no `Worker`, a policy that forbids blob workers).
  */
 export const startTicker: StartTicker = (everyMs, onTick) => {
+  let stopped = false;
   let stopTimer: StopTicker | undefined;
   const fallBackToTimer = () => {
     const id = setInterval(onTick, everyMs);
@@ -29,13 +33,16 @@ export const startTicker: StartTicker = (everyMs, onTick) => {
         type: 'text/javascript',
       }),
     );
-    const worker = new Worker(url);
+    // Named so a test harness can tell this worker from the engine worker (`m2-loop` counts engine generations).
+    const worker = new Worker(url, { name: TICKER_WORKER_NAME });
     stopWorker = () => {
       worker.terminate();
       URL.revokeObjectURL(url);
     };
     worker.addEventListener('message', () => onTick());
     worker.addEventListener('error', () => {
+      // Chrome delivers a load failure even after terminate(): a stopped ticker must not start a timer nobody stops.
+      if (stopped) return;
       stopWorker?.();
       stopWorker = undefined;
       if (!stopTimer) fallBackToTimer();
@@ -44,6 +51,7 @@ export const startTicker: StartTicker = (everyMs, onTick) => {
     fallBackToTimer();
   }
   return () => {
+    stopped = true;
     stopWorker?.();
     stopWorker = undefined;
     stopTimer?.();

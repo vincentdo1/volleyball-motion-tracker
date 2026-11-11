@@ -348,3 +348,64 @@ describe('GPU loss', () => {
     expect(readies.at(-1)?.backend).toBe('wasm');
   }, 60_000);
 });
+
+describe('cancel while the client recovers', () => {
+  it('wins: nothing is reopened or restarted, and the next clip opens and runs', async () => {
+    const blockAtPtsUs = await ptsOfFrame(60);
+    engine = createStubEngine((generation) => (generation === 0 ? { ml: { blockAtPtsUs } } : {}), {
+      stallFloorMs: 1500,
+    });
+    const api = engine;
+    const starts = record(api, 'run-started');
+    const errors = record(api, 'error');
+    const opened = record(api, 'opened');
+    const finals = record(api, 'final');
+    let cancelled: Promise<void> | undefined;
+    // The restarted worker reports readiness mid-recovery: the cancel arrives before the clip is reopened.
+    let readies = 0;
+    api.on('ready', () => {
+      if (++readies === 2) cancelled = api.cancel();
+    });
+    await api.init({ tierOverride: 'webgpu-default' });
+    await api.open(await fixtureFile(CLIP));
+    await api.start();
+    await vi.waitFor(() => expect(cancelled).toBeDefined(), { timeout: 30_000 });
+    await cancelled;
+    expect(api.state).toBe('ready');
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(starts).toHaveLength(1);
+    expect(opened).toHaveLength(1);
+    expect(errors).toEqual([]);
+    expect(api.state).toBe('ready');
+    // The engine is usable again.
+    await api.open(await fixtureFile(CLIP));
+    const done = until(api, 'final');
+    await api.start();
+    await done;
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.result.frames.ptsUs.length).toBe(181);
+  }, 60_000);
+});
+
+describe('finalizing', () => {
+  it('fails in plain words when finalizing never ends, and the engine can be used again', async () => {
+    engine = createStubEngine((generation) => (generation === 0 ? { ml: { blockFinalize: true } } : {}), {
+      finalizeCeilingMs: 2000,
+    });
+    const api = engine;
+    const errors = record(api, 'error');
+    const progress = record(api, 'progress');
+    await api.init({ tierOverride: 'webgpu-default' });
+    await api.open(await fixtureFile(CLIP));
+    const failed = until(api, 'error');
+    await api.start();
+    expect((await failed).error.message).toBe('Finishing the analysis took too long.');
+    expect(errors.map((e) => e.error.code)).toEqual(['worker-crashed']);
+    expect(api.state).toBe('failed');
+    expect(progress.some((p) => p.progress.stage === 'finalizing')).toBe(true);
+    // Not blocked for good: a fresh worker takes the next clip.
+    await api.init({ tierOverride: 'webgpu-default' });
+    await api.open(await fixtureFile(CLIP));
+    expect(api.state).toBe('opened');
+  }, 60_000);
+});

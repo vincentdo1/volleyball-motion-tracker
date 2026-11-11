@@ -4,7 +4,7 @@ import type { StubWorkerConfig } from './stub-engine.worker';
 /** An engine over the stub worker; `config` may depend on the worker generation (0 = first, then restarts). */
 export function createStubEngine(
   config: StubWorkerConfig | ((generation: number) => StubWorkerConfig) = {},
-  client: Pick<EngineClientOptions, 'stallFloorMs'> = {},
+  client: Pick<EngineClientOptions, 'stallFloorMs' | 'finalizeCeilingMs'> = {},
 ): EngineHandle {
   return createEngine({
     ...client,

@@ -52,6 +52,13 @@ export interface ProcessingRunInit {
 
 const STATS_INTERVAL_MS = 1000;
 
+/** What a cancelled run analysed, finalized once: the result the view shows and the document the exports are made from. */
+export interface PartialResult {
+  readonly result: FinalResult;
+  /** `posetrack.json` text of `result`. */
+  readonly json: string;
+}
+
 /** One `start()`: decode loop, streaming, persistence, finalisation. Ends in `opened` (cancel), `done` or `failed`. */
 export class ProcessingRun {
   private readonly control = new RunControl();
@@ -61,7 +68,7 @@ export class ProcessingRun {
   private readonly loop: FrameLoop;
   private seq = 0;
   private settled: Promise<void> = Promise.resolve();
-  private partial: Promise<string | null> | undefined;
+  private partial: Promise<PartialResult | null> | undefined;
 
   constructor(private readonly init: ProcessingRunInit) {
     const { host, store, manifest, settings, plan, clip } = init;
@@ -121,15 +128,21 @@ export class ProcessingRun {
   }
 
   /**
-   * `posetrack.json` text for what a run that was cancelled has analysed so far, marked partial in
-   * `extensions.partial`; null when it analysed nothing. Call once the run has stopped.
+   * The analysed part of a run that was cancelled (marked partial in `header.extensions.partial`), finalized once and
+   * cached: the kept view, the JSON/CSV exports and the MP4 overlay all come from this one result, so they share track
+   * ids and colour slots. null when the run analysed nothing. Call once the run has stopped.
    */
-  partialPoseTrack(): Promise<string | null> {
+  partialResult(): Promise<PartialResult | null> {
     this.partial ??= this.buildPartial();
     return this.partial;
   }
 
-  private async buildPartial(): Promise<string | null> {
+  /** `posetrack.json` text of the partial result; null when nothing was analysed. */
+  async partialPoseTrack(): Promise<string | null> {
+    return (await this.partialResult())?.json ?? null;
+  }
+
+  private async buildPartial(): Promise<PartialResult | null> {
     const manifest = this.writer.snapshot();
     const analysedFrames = manifest.chunks.reduce((sum, chunk) => sum + chunk.frames, 0);
     if (analysedFrames === 0) return null;
@@ -138,7 +151,8 @@ export class ProcessingRun {
       plannedFrames: this.init.plan.processedCount,
       analysedUntilUs: manifest.chunks.reduce((end, chunk) => Math.max(end, chunk.endUs), 0),
     };
-    return JSON.stringify(encodePoseTrack(await this.buildResult(manifest, info)));
+    const result = await this.buildResult(manifest, info);
+    return { result, json: JSON.stringify(encodePoseTrack(result)) };
   }
 
   private async send(batch: Parameters<ChunkWriter['write']>[0]): Promise<void> {
@@ -186,6 +200,9 @@ export class ProcessingRun {
       : undefined;
     setBusy(true);
     try {
+      // Before any chunk: a consumer learns here whether this stream continues the one it holds or starts again.
+      const { resumedFrames } = this.init;
+      host.emit({ type: 'run-started', fresh: resumedFrames === 0, resumedFrames });
       // A complete session goes straight to `final`, which carries everything a replay would.
       const replayed = this.init.startUs === null || (await this.replayStored());
       const outcome = !replayed ? 'cancelled' : this.init.startUs === null ? 'completed' : await this.runLoop(debug);
@@ -236,6 +253,21 @@ export class ProcessingRun {
   private async finalize(): Promise<void> {
     const { host, clip, store } = this.init;
     host.setState('finalizing');
+    // Finalising is one long silent computation: this report is what the client's ceiling for it is measured from.
+    const { plan } = this.init;
+    host.emit({
+      type: 'progress',
+      progress: {
+        stage: 'finalizing',
+        doneUs: clip.metadata.durationUs,
+        totalUs: clip.metadata.durationUs,
+        framesDone: plan.processedCount,
+        framesTotal: plan.processedCount,
+        fps: 0,
+        mediaRate: 0,
+        etaS: null,
+      },
+    });
     const result = await this.buildResult(await this.writer.finish());
     await store.writePoseTrack(JSON.stringify(encodePoseTrack(result)));
     await recordSession({

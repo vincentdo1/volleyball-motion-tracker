@@ -13,7 +13,7 @@ import {
   type StartOptions,
 } from '@/contracts/protocol';
 import { detectCapabilities } from '../capabilities/detect';
-import { cpuTierBelow, selectTier } from '../capabilities/tier';
+import { selectTier } from '../capabilities/tier';
 import { ExportManager, isCancellation } from '../export/export-manager';
 import { type OpenedClip, openClip } from '../ingest/open-clip';
 import { MAX_IN_FLIGHT } from '../process/frame-loop';
@@ -118,7 +118,7 @@ export class EngineCore {
       case 'cancel':
         return this.cancel(command);
       case 'partial-result':
-        return this.reply(command.requestId, engineError('invalid-state', 'Partial results are not available yet.'));
+        return this.partialResult(command);
       case 'ack':
         this.run?.acknowledge(command.seq);
         return;
@@ -189,35 +189,23 @@ export class EngineCore {
     const tierId = options.tierOverride ?? caps.recommendedTier;
     if (!tierId) throw fail('unsupported-browser', caps.reasons.join('; ') || 'No usable processing path.');
     this.ml ??= await this.deps.loadMl();
+    // A re-init after a failure runs in the same worker: what the failed attempt loaded must not stay beside the new set.
+    await this.releaseEverything();
     let loaded = await this.loadTier(tierId, caps, options);
     let warmup: Awaited<ReturnType<FramePipeline['warmup']>>;
-    let steppedDown = false;
     try {
       warmup = await loaded.pipeline.warmup();
     } catch (error) {
-      // The first inference is where a browser's WebGPU shaders compile, and where a device that cannot run them
-      // fails (Firefox: the 'Pad' shader). Carry on at once on the CPU rather than ask the person to retry.
-      const failed = toEngineError(error, 'inference-failed');
       await this.releaseLoaded(loaded).catch(() => undefined);
-      if (failed.code !== 'inference-failed' || DEVICE_TIERS[tierId].backend !== 'webgpu') throw failed;
-      const cpuTier = cpuTierBelow(tierId, caps.crossOriginIsolated);
-      this.warn({
-        code: 'slow-mode',
-        message: 'The graphics card could not run the analysis, so it continues on the processor, which is slower.',
-        detail: { tier: cpuTier, reason: 'gpu-inference-failed' },
-      });
-      loaded = await this.loadTier(cpuTier, caps, options);
-      steppedDown = true;
-      warmup = await loaded.pipeline.warmup();
+      throw this.warmupFailure(error, tierId, caps);
     }
-    if (!options.tierOverride && !steppedDown) {
+    if (!options.tierOverride) {
       const refined = selectTier(caps, {
         qualityOptIn: options.qualityOptIn ?? false,
         benchmarkMsPerFrame: warmup.totalMs,
       }).tier;
       if (refined && refined !== loaded.tierId) {
         await this.releaseLoaded(loaded);
-        this.loaded = null;
         loaded = await this.loadTier(refined, caps, options);
       }
     }
@@ -232,6 +220,34 @@ export class EngineCore {
       models: loaded.prepared.models,
       warmup,
     };
+  }
+
+  /**
+   * The error for a failed warm-up. The first inference is where a browser's WebGPU shaders compile, and where a device
+   * that cannot run them fails (Firefox: the 'Pad' shader). Only an `inference-failed` from the runtime on a WebGPU
+   * tier is a GPU failure (it carries the tier for the client, which restarts the worker on a CPU tier: that is the
+   * only way to free the whole WebGPU runtime); anything else keeps its own code and is not read as one.
+   */
+  private warmupFailure(error: unknown, tierId: DeviceTierId, caps: CapabilityReport): EngineError {
+    const failed = toEngineError(error);
+    const backend = DEVICE_TIERS[tierId].backend;
+    if (failed.code !== 'inference-failed' || backend !== 'webgpu') return failed;
+    return engineError(failed.code, failed.message, {
+      ...failed.detail,
+      tier: tierId,
+      backend,
+      crossOriginIsolated: caps.crossOriginIsolated,
+      phase: 'warmup',
+    });
+  }
+
+  /** Releases the loaded model sessions and the run's own pipeline (re-init, dispose). */
+  private async releaseEverything(): Promise<void> {
+    const { runPipeline, loaded } = this;
+    this.runPipeline = null;
+    this.loaded = null;
+    await runPipeline?.dispose().catch(() => undefined);
+    if (loaded) await this.releaseLoaded(loaded).catch(() => undefined);
   }
 
   private async loadTier(tierId: DeviceTierId, caps: CapabilityReport, options: InitOptions): Promise<Loaded> {
@@ -483,6 +499,22 @@ export class EngineCore {
     this.reply(command.requestId);
   }
 
+  /**
+   * After a cancel: finalizes what the run analysed once (cached by the run), emits it as `final` and replies. Nothing
+   * analysed, or no run any more (a new file was opened, the result discarded): replies without a result.
+   */
+  private async partialResult(command: Command<'partial-result'>): Promise<void> {
+    if (!this.machine.is('opened')) return this.invalid(command.requestId, 'Reading the partial result');
+    try {
+      const partial = await this.run?.partialResult();
+      // A private copy per emission: the buffers of a posted result are transferred away, the cached one stays whole.
+      if (partial) this.post({ type: 'final', result: structuredClone(partial.result) });
+      this.reply(command.requestId);
+    } catch (error) {
+      this.reply(command.requestId, toEngineError(error));
+    }
+  }
+
   // ---- export -----------------------------------------------------------------------------------------------
 
   private async export(command: Command<'export'>): Promise<void> {
@@ -512,9 +544,7 @@ export class EngineCore {
     await this.run?.cancel();
     this.session?.clip.dispose();
     this.session = null;
-    await this.runPipeline?.dispose();
-    if (this.loaded) await this.releaseLoaded(this.loaded);
-    this.loaded = null;
+    await this.releaseEverything();
     this.machine.transition('disposed');
     this.reply(command.requestId);
   }
