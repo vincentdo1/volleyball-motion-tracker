@@ -8,7 +8,15 @@ import {
 import { buildFocusWindow } from './focus';
 import { prepareFor } from './focus-testing';
 import { createFrameSource } from './frame-source';
-import { GHOST_COUNT, GHOST_REACH_S, ghostTimes, selectGhosts } from './ghosts';
+import {
+  GHOST_COUNT,
+  GHOST_MIN_DISPLACEMENT,
+  GHOST_REACH_S,
+  GHOST_STEP_S,
+  ghostTimes,
+  hipPathBodyHeights,
+  selectGhosts,
+} from './ghosts';
 import { createSkeletonRenderer } from './renderer';
 import { motionScene } from './testing';
 
@@ -62,6 +70,36 @@ describe('ghost selection and the displacement rule', () => {
     const set = selectGhosts(windowAt(motionScene({ fps: 30, seconds: 3 }), 60), false);
     expect(set.status).toBe('still');
     expect(set.ghosts).toHaveLength(0);
+  });
+
+  it('draws none for a still player whose hip scores flicker: one centre for the whole window (review #20)', () => {
+    // box up to the raised hands, so the box centre sits well above the hips; hips measured on every other ghost step
+    const flicker = (t: number) => (Math.floor(t / GHOST_STEP_S) % 2 === 0 ? 0.6 : 0.05);
+    const scene = motionScene({
+      fps: 60,
+      seconds: 3,
+      box: [400, 60, 480, 480],
+      joints: { 11: () => [448, 400], 12: () => [432, 400] },
+      scores: { 11: flicker, 12: flicker },
+    });
+    for (const frame of [103, 118, 133]) {
+      const set = selectGhosts(windowAt(scene, frame), false);
+      expect(set.status, `frame ${frame}`).toBe('still');
+      expect(set.ghosts).toHaveLength(0);
+    }
+  });
+
+  it('measures a moving player over the box centre path when the hips are not measured in every sample', () => {
+    const flicker = (t: number) => (Math.floor(t / GHOST_STEP_S) % 2 === 0 ? 0.6 : 0.05);
+    const scene = motionScene({
+      fps: 60,
+      seconds: 3,
+      body: (t) => [300 * t, 0],
+      scores: { 11: flicker, 12: flicker },
+    });
+    const win = windowAt(scene, 118);
+    expect(hipPathBodyHeights(win.samples, win.bodyHeight)).toBeGreaterThan(GHOST_MIN_DISPLACEMENT);
+    expect(selectGhosts(win, false).status).toBe('drawn');
   });
 
   it('draws none while a player runs on the spot toward the camera (hips barely move in the image)', () => {

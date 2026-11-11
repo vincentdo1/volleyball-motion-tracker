@@ -3,12 +3,13 @@ import {
   type Canvas2DContext,
   containTransform,
   DEFAULT_RENDER_OPTIONS,
+  type PoseHistory,
   type RenderOptions,
 } from '@/contracts/renderer';
 import { buildFocusWindow } from './focus';
 import { prepareFor } from './focus-testing';
 import { createFrameSource } from './frame-source';
-import { velMaxOf } from './kinematics';
+import { jointSpeedPx, velMaxOf } from './kinematics';
 import { createSkeletonRenderer } from './renderer';
 import { motionScene } from './testing';
 import { RAMP, rampColor, velocityColors } from './velocity';
@@ -114,5 +115,58 @@ describe('velocity mode in the renderer', () => {
 
   it('colours only the focus player', () => {
     expect(run({ velocityColor: true, focusTrackId: null }).texts.some((t) => t.includes('body-heights'))).toBe(false);
+  });
+});
+
+function historyOf(f: { history?: PoseHistory }): PoseHistory {
+  if (!f.history) throw new Error('no history');
+  return f.history;
+}
+
+describe('speed does not depend on the frame rate for a peaked swing (review #18, #19)', () => {
+  // wrist at 60 px amplitude and 19 rad/s on a 140 px body: its fastest instant is at t = 1 s
+  const OMEGA = 19;
+  const swing = (t: number) => [420 + 60 * Math.sin(OMEGA * (t - 1)), 300] as const;
+  const BOX = [400, 200, 440, 340] as const;
+  const FPS = [24, 30, 60] as const;
+  const sceneAt = (fps: number) => motionScene({ fps, seconds: 3, box: BOX, joints: { [R_WRIST]: swing } });
+  const spread = (values: number[]) => (Math.max(...values) - Math.min(...values)) / Math.max(...values);
+
+  it('reads the same px/s at 24, 30 and 60 fps, equal to the exact +/- 50 ms difference', () => {
+    const speeds = FPS.map((fps) => {
+      const f = createFrameSource(sceneAt(fps)).frameAt(fps);
+      const samples = historyOf(f).samples(1, f.ptsUs - 500_000, f.ptsUs + 500_000);
+      const index = samples.findIndex((s) => s.ptsUs === f.ptsUs);
+      return jointSpeedPx(samples, index, R_WRIST) as number;
+    });
+    const expected = (60 * 2 * Math.sin(OMEGA * 0.05)) / 0.1;
+    for (const v of speeds) expect(Math.abs(v - expected) / expected).toBeLessThan(0.06);
+    expect(spread(speeds)).toBeLessThan(0.06);
+  });
+
+  it('gives the same body-height speed, p95 scale and legend figure at every frame rate', () => {
+    const colors = FPS.map((fps) => {
+      const f = createFrameSource(sceneAt(fps)).frameAt(fps);
+      const win = buildFocusWindow(f.history, prepareFor(f.players[0]), f.ptsUs, 0.1, 0.1);
+      if (!win) throw new Error('no window');
+      return { v: velocityColors(win), p95: historyOf(f).wristSpeedP95(1) as number };
+    });
+    expect(spread(colors.map((c) => c.v.speeds[R_WRIST] as number))).toBeLessThan(0.06);
+    expect(spread(colors.map((c) => c.p95))).toBeLessThan(0.06);
+    expect(spread(colors.map((c) => c.v.velMax))).toBeLessThan(0.06);
+    expect(colors[0]?.v.velMax).toBeGreaterThan(4);
+  });
+
+  it('measures the p95 in the unit the colours use: the pose apparent height, not the detector box', () => {
+    // a box much taller than the visible body (e.g. cut by the frame edge): colours divide by the apparent height
+    const scene = motionScene({ fps: 30, seconds: 3, box: BOX, joints: { [R_WRIST]: swing } });
+    const f = createFrameSource(scene).frameAt(30);
+    const win = buildFocusWindow(f.history, prepareFor(f.players[0]), f.ptsUs, 0.1, 0.1);
+    if (!win) throw new Error('no window');
+    const px = jointSpeedPx(win.samples, win.index, R_WRIST) as number;
+    // the peak frame's speed over the track's p95: near 1 when both use win.bodyHeight
+    const ratio = px / win.bodyHeight / (historyOf(f).wristSpeedP95(1) as number);
+    expect(ratio).toBeGreaterThan(0.9);
+    expect(ratio).toBeLessThan(1.15);
   });
 });

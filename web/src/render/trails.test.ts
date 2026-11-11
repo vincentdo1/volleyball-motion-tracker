@@ -55,6 +55,24 @@ describe('wrist comet dots', () => {
     expect(a[0]?.recency).toBeCloseTo(b[0]?.recency ?? 0, 1);
   });
 
+  it('gates a peaked swing the same way at 24, 30 and 60 fps', () => {
+    // fastest at t = 1.5 s: about 2.5 body-heights/s over +/- 50 ms, so the gate cuts the dots either side of the peak
+    const swing = (t: number) => [470 + 45 * Math.sin(19 * (t - 1.5)), 300] as const;
+    const runs = [24, 30, 60].map((fps) => {
+      const scene = motionScene({ fps, seconds: 2, joints: { [RIGHT_WRIST]: swing } });
+      return wristDots(windowAt(scene, fps * 1.5), RIGHT_WRIST, 0.5);
+    });
+    // each dot is the speed at its own sample (up to half a frame from the 50 ms grid, 21 ms at 24 fps), so dots near
+    // the gate may flip between rates; the dots, the peak and the speed at the newest dot may not
+    const counts = runs.map((d) => d.length);
+    expect(Math.min(...counts)).toBeGreaterThan(0);
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(2);
+    const peaks = runs.map((d) => Math.max(...d.map((x) => x.speed)));
+    expect((Math.max(...peaks) - Math.min(...peaks)) / Math.max(...peaks)).toBeLessThan(0.08);
+    const newest = runs.map((d) => d.find((x) => x.recency === 0)?.speed ?? 0);
+    expect((Math.max(...newest) - Math.min(...newest)) / Math.max(...newest)).toBeLessThan(0.08);
+  });
+
   it('breaks the trail at an L/R swap repair', () => {
     const swapped = (t: number, joint: number) =>
       joint === RIGHT_WRIST && t > 0.99 && t < 1.07 ? KeypointFlag.SWAP_REPAIRED : 0;

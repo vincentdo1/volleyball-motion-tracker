@@ -1,5 +1,6 @@
 import { KeypointFlag } from '@/contracts/posetrack';
 import { CASING_COLOR, type Canvas2DContext, type RenderOptions } from '@/contracts/renderer';
+import { BONE_MIN_SCORE, TORSO_JOINTS } from './assess';
 import { BEAD_JOINTS, BODY_BONE_INDICES, BONE_STYLES, J } from './bones';
 import { hexToRgb, mix, type Rgb, rgba, smoothstep, WHITE } from './color';
 import { circlePath, roundConePath } from './geometry';
@@ -26,6 +27,8 @@ import { boneGradient, type VelocityColors } from './velocity';
 const CASING = hexToRgb(CASING_COLOR);
 const JOINT_FILL: Rgb = [245, 248, 252];
 const MIN_BONE_ALPHA = 0.02;
+/** Least alpha of a shoulder or hip the consensus floor admitted: the ladder counted it, so it must be seen. */
+const FLOOR_TORSO_ALPHA = 0.5;
 
 /** How a player is drawn relative to the focus selection. */
 export type PlayerRole = 'plain' | 'focus' | 'context';
@@ -46,18 +49,33 @@ export function widthFor(pc: PaintContext, p: PreparedPlayer, role: PlayerRole):
   return role === 'focus' ? w * FOCUS_WIDTH : role === 'context' ? w * CONTEXT_WIDTH : w;
 }
 
-function jointAlpha(p: PreparedPlayer, joint: number): number {
-  const kp = p.player.keypoints;
-  if (!kp) return 0;
-  const score = kp[joint * 3 + 2] as number;
-  if (Number.isNaN(score)) return 0;
-  const alpha = smoothstep(CONF_SHOW, CONF_FULL, score);
-  const interpolated = ((p.player.kpFlags?.[joint] ?? 0) & KeypointFlag.INTERPOLATED) !== 0;
-  return interpolated ? alpha * INTERPOLATED_ALPHA : alpha;
+function scoreOf(p: PreparedPlayer, joint: number): number {
+  const score = p.player.keypoints?.[joint * 3 + 2] as number | undefined;
+  return score === undefined || Number.isNaN(score) ? 0 : score;
 }
 
+/** A shoulder or hip the pose gate admitted below BONE_MIN_SCORE (the consensus floor): inferred, never faded out. */
+function isFloorTorso(p: PreparedPlayer, joint: number): boolean {
+  return (
+    TORSO_JOINTS.has(joint) && p.assessment.torsoFloor < BONE_MIN_SCORE && scoreOf(p, joint) >= p.assessment.torsoFloor
+  );
+}
+
+function jointAlpha(p: PreparedPlayer, joint: number): number {
+  if (!p.player.keypoints) return 0;
+  const score = scoreOf(p, joint);
+  const alpha = smoothstep(CONF_SHOW, CONF_FULL, score);
+  const interpolated = ((p.player.kpFlags?.[joint] ?? 0) & KeypointFlag.INTERPOLATED) !== 0;
+  const faded = interpolated ? alpha * INTERPOLATED_ALPHA : alpha;
+  if (!isFloorTorso(p, joint)) return faded;
+  // the lift fades out as the score climbs to CONF_FULL, so it meets the measured alpha without a step
+  return Math.max(faded, FLOOR_TORSO_ALPHA * (1 - smoothstep(BONE_MIN_SCORE, CONF_FULL, score)));
+}
+
+/** Inferred rather than measured: an interpolated joint, or a torso joint below BONE_MIN_SCORE that the gate admitted. */
 function isInterpolated(p: PreparedPlayer, joint: number): boolean {
-  return ((p.player.kpFlags?.[joint] ?? 0) & KeypointFlag.INTERPOLATED) !== 0;
+  if (((p.player.kpFlags?.[joint] ?? 0) & KeypointFlag.INTERPOLATED) !== 0) return true;
+  return isFloorTorso(p, joint) && scoreOf(p, joint) < BONE_MIN_SCORE;
 }
 
 function identityColor(p: PreparedPlayer, role: PlayerRole): Rgb {

@@ -8,8 +8,9 @@ import {
   type TrackColumns,
 } from '@/contracts/posetrack';
 import type { PoseHistory, PoseSample, RenderBall, RenderFrame, RenderPlayer } from '@/contracts/renderer';
+import { assessPose } from './assess';
 import { BONE_STYLES } from './bones';
-import { boxHeight, JOINT, jointSpeedPx, percentile } from './kinematics';
+import { JOINT, jointSpeedPx, percentile } from './kinematics';
 
 /** Produces the renderer's input for a frame of the frame table. Results are keyed by PTS, never by time x fps. */
 export interface FrameSource {
@@ -166,10 +167,18 @@ function lowerBound(sorted: Float64Array, value: number): number {
   return lo;
 }
 
-/** Wrist speeds in body-heights/s over a whole track (both wrists, every measurable sample). */
+/**
+ * Wrist speeds in body-heights/s over a whole track (both wrists, every measurable sample). The body height is the
+ * measure the painter divides the per-frame speeds by (`assessPose(...).apparentHeight`, here the median over the
+ * neighbouring samples), so the clip-wide p95 and the coloured speeds share one unit even where a box is cut by the
+ * frame edge.
+ */
 function wristSpeedsOf(samples: readonly PoseSample[]): number[] {
   const players = samples.map((s) => s.player);
-  const heights = players.map(boxHeight);
+  const heights = players.map((p) => {
+    const a = assessPose(p);
+    return a.level === 'marker' ? 0 : a.apparentHeight;
+  });
   const speeds: number[] = [];
   for (let i = 0; i < players.length; i++) {
     const near: number[] = [];

@@ -71,3 +71,49 @@ describe('repeated hues', () => {
     expect(Math.max(...slots.map(colorVariant))).toBe(3);
   });
 });
+
+describe('assignColorSlots reuse', () => {
+  it('does not repeat a slot when a plain-hue holder ends before a new track is placed (review #14)', () => {
+    const tracks = [
+      track(1, 0, 2_000_000),
+      ...[2, 3, 4, 5, 6, 7, 8].map((id) => track(id, 0, 10_000_000)),
+      track(9, 1_000_000, 10_000_000),
+      track(10, 3_000_000, 10_000_000),
+    ];
+    const slots = assignColorSlots(tracks);
+    expect(slots.get(9)).not.toBe(slots.get(10));
+    expect(slots.get(9)).toBe(8);
+    expect(slots.get(10)).toBe(0); // the plain look freed by track 1
+    // stable and deterministic
+    expect([...assignColorSlots([...tracks].reverse())].sort()).toEqual([...slots].sort());
+  });
+
+  it('repeats an exact slot only when every look is held by overlapping tracks', () => {
+    const slots = assignColorSlots(Array.from({ length: 33 }, (_, i) => track(i + 1, 0, 1000)));
+    expect(new Set([...slots.values()].slice(0, 32)).size).toBe(32);
+    expect(slots.get(33)).toBeLessThan(PALETTE_SIZE * VARIANT_COUNT);
+  });
+
+  it('never gives two time-overlapping tracks one slot while at most 32 tracks are alive at once', () => {
+    let seed = 12345;
+    const rand = () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed / 2 ** 32;
+    };
+    for (let round = 0; round < 200; round++) {
+      const n = 5 + Math.floor(rand() * 60);
+      const tracks = Array.from({ length: n }, (_, i) => {
+        const first = Math.floor(rand() * 20_000);
+        return track(i + 1, first, first + 500 + Math.floor(rand() * 8_000));
+      });
+      const alive = (t: number) => tracks.filter((x) => x.firstPtsUs <= t && t <= x.lastPtsUs).length;
+      const maxAlive = Math.max(...tracks.map((x) => alive(x.firstPtsUs)));
+      if (maxAlive > PALETTE_SIZE * VARIANT_COUNT) continue;
+      const slots = assignColorSlots(tracks);
+      for (const a of tracks)
+        for (const b of tracks)
+          if (a.id < b.id && a.firstPtsUs <= b.lastPtsUs && b.firstPtsUs <= a.lastPtsUs)
+            expect(slots.get(a.id), `round ${round} tracks ${a.id}/${b.id}`).not.toBe(slots.get(b.id));
+    }
+  });
+});

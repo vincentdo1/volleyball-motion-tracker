@@ -68,20 +68,38 @@ function nearest(samples: readonly PoseSample[], target: number, tolerance: numb
   return best;
 }
 
-function hipOrBoxCentre(s: PoseSample): readonly [number, number] | null {
+function hipCentre(s: PoseSample): readonly [number, number] | null {
   const l = jointPosition(s.player, JOINT.leftHip);
   const r = jointPosition(s.player, JOINT.rightHip);
-  if (l && r) return [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2];
+  return l && r ? [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2] : null;
+}
+
+function boxCentre(s: PoseSample): readonly [number, number] | null {
   const b = s.player.box;
   return b ? [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2] : null;
 }
 
-/** Length of the hip path through the samples, in body heights. */
+/**
+ * The one centre the displacement rule follows across a whole set of samples: the hip mid-point when both hips are
+ * measured in every sample, otherwise the detector-box centre for every sample (the documented fallback). Never a mix:
+ * the box centre sits about 0.2 body heights from the hips, so a hip score flickering around the threshold would add
+ * a jump at every switch and make a player standing still look as if they travel (review #20). When neither centre
+ * exists for every sample, the one that exists in more of them is used and the others are skipped.
+ */
+function centreOf(samples: readonly PoseSample[]): (s: PoseSample) => readonly [number, number] | null {
+  const hips = samples.filter((s) => hipCentre(s)).length;
+  if (hips === samples.length) return hipCentre;
+  const boxes = samples.filter((s) => boxCentre(s)).length;
+  return hips > boxes ? hipCentre : boxCentre;
+}
+
+/** Length of the path of one consistent centre (see centreOf) through the samples, in body heights. */
 export function hipPathBodyHeights(samples: readonly PoseSample[], bodyHeight: number): number {
+  const centre = centreOf(samples);
   let total = 0;
   let previous: readonly [number, number] | null = null;
   for (const s of samples) {
-    const c = hipOrBoxCentre(s);
+    const c = centre(s);
     if (!c) continue;
     if (previous) total += Math.hypot(c[0] - previous[0], c[1] - previous[1]);
     previous = c;

@@ -17,7 +17,7 @@ export const TORSO_MIN_SCORE = 0.5;
  */
 const CONSENSUS_JOINTS = 8;
 const CONSENSUS_FLOOR = 0.2;
-const TORSO_JOINTS: ReadonlySet<number> = new Set([J.leftShoulder, J.rightShoulder, J.leftHip, J.rightHip]);
+export const TORSO_JOINTS: ReadonlySet<number> = new Set([J.leftShoulder, J.rightShoulder, J.leftHip, J.rightHip]);
 /** A bone longer than this multiple of the track's own median length is a swap/jump glitch. */
 const REF_LENGTH_FACTOR = 1.6;
 /** Share of confident keypoints that must sit inside the detector box (whole-pose check a). */
@@ -40,6 +40,12 @@ export interface PoseAssessment {
   readonly torsoLength: number;
   /** Apparent height in display px: max(confident y-extent, 3.2 x torso). 0 for a box-only player. */
   readonly apparentHeight: number;
+  /**
+   * Score a shoulder or hip had to reach for this pose: BONE_MIN_SCORE, or the lower CONSENSUS_FLOOR. Torso joints
+   * between the two are admitted on the strength of the whole pose, so the painter draws them as inferred (dashed,
+   * with a minimum alpha) rather than letting the confidence fade hide bones the ladder counted.
+   */
+  readonly torsoFloor: number;
 }
 
 function kpScore(kp: Float32Array, joint: number): number {
@@ -151,13 +157,45 @@ function wholePoseOk(
 }
 
 /**
+ * A limb or foot bone whose chain does not reach a torso bone through bones that passed (a forearm under a gated
+ * shoulder, a shin under a gated hip) would float on screen. Rating a pose must match what the viewer sees, so such
+ * bones are dropped here, before the ladder counts limbs.
+ */
+function dropDetachedBones(boneOk: boolean[]): void {
+  const reached = new Set<number>();
+  for (const i of BODY_BONE_INDICES) {
+    const def = BONE_STYLES[i]?.def;
+    if (boneOk[i] && def?.kind === 'torso') {
+      reached.add(def.a);
+      reached.add(def.b);
+    }
+  }
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const i of BODY_BONE_INDICES) {
+      const def = BONE_STYLES[i]?.def;
+      if (!boneOk[i] || !def || (reached.has(def.a) && reached.has(def.b))) continue;
+      if (reached.has(def.a) || reached.has(def.b)) {
+        reached.add(def.a);
+        reached.add(def.b);
+        grew = true;
+      }
+    }
+  }
+  for (const i of BODY_BONE_INDICES) {
+    const def = BONE_STYLES[i]?.def;
+    if (boneOk[i] && def && !(reached.has(def.a) && reached.has(def.b))) boneOk[i] = false;
+  }
+}
+
+/**
  * Plausibility gate, whole-pose checks and the degradation ladder for one player (05 §2.6). Gated bones are never
  * drawn: `boneOk[i]` is the only authority for whether bone i may appear.
  */
 export function assessPose(player: RenderPlayer): PoseAssessment {
   const kp = player.keypoints;
   const boneOk = new Array<boolean>(BONE_STYLES.length).fill(false);
-  if (!kp) return { level: 'marker', boneOk, torsoLength: 0, apparentHeight: 0 };
+  if (!kp) return { level: 'marker', boneOk, torsoLength: 0, apparentHeight: 0, torsoFloor: BONE_MIN_SCORE };
 
   const floor = torsoFloor(kp);
   const jointFloor = (j: number) => (TORSO_JOINTS.has(j) ? floor : BONE_MIN_SCORE);
@@ -180,6 +218,7 @@ export function assessPose(player: RenderPlayer): PoseAssessment {
     boneOk[i] = true;
   }
 
+  dropDetachedBones(boneOk);
   let torsoBones = 0;
   let limbs = 0;
   for (const i of BODY_BONE_INDICES) {
@@ -195,7 +234,7 @@ export function assessPose(player: RenderPlayer): PoseAssessment {
     level = limbs >= 5 ? 'full' : limbs >= 1 ? 'partial' : 'torso';
   }
   if (level === 'marker') boneOk.fill(false);
-  return { level, boneOk, torsoLength: torso, apparentHeight: apparent };
+  return { level, boneOk, torsoLength: torso, apparentHeight: apparent, torsoFloor: floor };
 }
 
 /** Intersection over union of two [x0, y0, x1, y1] boxes. */

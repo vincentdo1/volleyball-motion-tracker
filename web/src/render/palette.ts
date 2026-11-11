@@ -56,10 +56,45 @@ export interface SlotTrack {
 }
 
 /**
+ * Every hue is held by an overlapping track: take the hue with the fewest held variants and its lowest free variant.
+ * Only when all VARIANT_COUNT looks of every hue are held does an exact slot repeat (the least-held one, lowest slot).
+ */
+function reuseSlot(held: ReadonlyMap<number, number>): number {
+  let bestHue = 0;
+  let bestVariant = VARIANT_COUNT;
+  let bestCount = Number.POSITIVE_INFINITY;
+  for (let hue = 0; hue < PALETTE_SIZE; hue++) {
+    let count = 0;
+    let free = VARIANT_COUNT;
+    for (let v = VARIANT_COUNT - 1; v >= 0; v--) {
+      if (held.has(hue + v * PALETTE_SIZE)) count++;
+      else free = v;
+    }
+    if (free < VARIANT_COUNT && count < bestCount) {
+      bestCount = count;
+      bestHue = hue;
+      bestVariant = free;
+    }
+  }
+  if (bestVariant < VARIANT_COUNT) return bestHue + bestVariant * PALETTE_SIZE;
+  let fallback = 0;
+  let fewest = Number.POSITIVE_INFINITY;
+  for (let slot = 0; slot < PALETTE_SIZE * VARIANT_COUNT; slot++) {
+    const n = held.get(slot) ?? 0;
+    if (n < fewest) {
+      fewest = n;
+      fallback = slot;
+    }
+  }
+  return fallback;
+}
+
+/**
  * Deterministic slot assignment (05 §2.4). Tracks are processed in birth order (ties by id). Each takes the free slot
  * that maximises the minimum OKLab distance to the slots of tracks it overlaps in time; ties go to the lowest slot.
- * When more than 8 tracks overlap, the least-used hue among the overlapping tracks is reused as its next variant
- * (lowest index on ties), so reused hues stay as far apart in time and palette position as possible. A slot never changes once assigned.
+ * When more than 8 tracks overlap, the hue with the fewest variants held by overlapping tracks (lowest index on ties)
+ * gets its lowest variant no overlapping track holds, so two tracks on screen together never share a look while fewer
+ * than 33 tracks overlap. A slot never changes once assigned.
  */
 export function assignColorSlots(tracks: readonly SlotTrack[]): Map<number, number> {
   const ordered = [...tracks].sort((a, b) => a.firstPtsUs - b.firstPtsUs || a.id - b.id);
@@ -68,9 +103,12 @@ export function assignColorSlots(tracks: readonly SlotTrack[]): Map<number, numb
   for (const track of ordered) {
     const overlapping = placed.filter((p) => p.firstPtsUs <= track.lastPtsUs && track.firstPtsUs <= p.lastPtsUs);
     const used = new Map<number, number>();
+    const heldSlots = new Map<number, number>(); // exact slot -> overlapping holders
     for (const p of overlapping) {
-      const slot = (slots.get(p.id) as number) % PALETTE_SIZE;
+      const exact = slots.get(p.id) as number;
+      const slot = exact % PALETTE_SIZE;
       used.set(slot, (used.get(slot) ?? 0) + 1);
+      heldSlots.set(exact, (heldSlots.get(exact) ?? 0) + 1);
     }
     let best = 0;
     let bestScore = Number.NEGATIVE_INFINITY;
@@ -85,14 +123,7 @@ export function assignColorSlots(tracks: readonly SlotTrack[]): Map<number, numb
         best = slot;
       }
     }
-    if (bestScore === Number.NEGATIVE_INFINITY) {
-      // every hue is taken by an overlapping track: reuse the least-used one as the next variant of that hue
-      let least = 0;
-      for (let slot = 1; slot < PALETTE_SIZE; slot++) {
-        if ((used.get(slot) ?? 0) < (used.get(least) ?? 0)) least = slot;
-      }
-      best = least + PALETTE_SIZE * Math.min(used.get(least) ?? 1, VARIANT_COUNT - 1);
-    }
+    if (bestScore === Number.NEGATIVE_INFINITY) best = reuseSlot(heldSlots);
     slots.set(track.id, best);
     placed.push(track);
   }

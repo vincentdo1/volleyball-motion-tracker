@@ -19,10 +19,22 @@ import { type PoseTrackDocument, SampleFlag } from '@/contracts/posetrack';
 import { decodePoseTrack } from '@/contracts/posetrack-codec';
 import type { RenderPlayer } from '@/contracts/renderer';
 import { assessPose, BONE_MIN_SCORE, findDuplicates } from './assess';
+import { BODY_BONE_INDICES } from './bones';
 import { createFrameSource } from './frame-source';
+import { preparePlayer } from './prepare';
+import { drawnBones } from './skeleton';
 
 const RUNS_DIR = process.env.VBT_RUNS_DIR ?? join(homedir(), '.cache/volleyball-motion-tracker/fixtures/m2-runs/final');
 const ONLY = process.env.VBT_ONLY ?? '';
+const UNIT_VIEW = { scale: 1, offsetX: 0, offsetY: 0, dpr: 1, canvasWidth: 1280, canvasHeight: 720 };
+
+/** Rated bones the painter drops (alpha under its minimum): a pose rated full must look connected, so this stays 0. */
+function unpaintedBones(player: RenderPlayer): number {
+  const prepared = preparePlayer(player, UNIT_VIEW);
+  if (prepared.assessment.level === 'marker') return 0;
+  const drawn = new Set(drawnBones(prepared, 1).map((b) => b.index));
+  return BODY_BONE_INDICES.filter((i) => prepared.assessment.boneOk[i] && !drawn.has(i)).length;
+}
 
 interface Tally {
   clear: number;
@@ -80,6 +92,7 @@ describe.skipIf(!RUNS_DIR)('gate coverage', () => {
       const result = decodePoseTrack(doc);
       const source = createFrameSource(result);
       const perTrack = new Map<string, Tally>();
+      let unpainted = 0;
       const all: Tally = {
         clear: 0,
         clearDrawn: 0,
@@ -107,6 +120,7 @@ describe.skipIf(!RUNS_DIR)('gate coverage', () => {
           };
           perTrack.set(player.label, tally);
           const level = assessPose(player).level;
+          if (!duplicates.has(i) && unpaintedBones(player) > 0) unpainted++;
           const key = duplicates.has(i)
             ? 'duplicate'
             : level === 'full'
@@ -129,7 +143,8 @@ describe.skipIf(!RUNS_DIR)('gate coverage', () => {
           }
         });
       }
-      process.stdout.write(`${line(clip, all)}\n`);
+      process.stdout.write(`${line(clip, all)}  unpainted-rated-poses ${unpainted}\n`);
+      expect(unpainted, `${clip}: poses rated for bones the painter hides`).toBe(0);
       expect(all.clearDrawn / all.clear).toBeGreaterThanOrEqual(Math.min(MIN_CLEAR_SHARE, CLIP_FLOORS[clip] ?? 1));
       for (const [label, tally] of [...perTrack].sort()) process.stdout.write(`  ${line(label, tally)}\n`);
       for (const [label, tally] of perTrack) {
