@@ -38,6 +38,27 @@ describe('engine notices', () => {
     off();
   });
 
+  it('words the notice by the mode the engine moved to, and never promises identical results (M4-1)', () => {
+    const toLite = { code: 'slow-mode', message: 'x', detail: { tier: 'webgpu-lite', reason: 'stalled' } } as const;
+    const toCpu = {
+      code: 'slow-mode',
+      message: 'x',
+      detail: { tier: 'wasm-mt', reason: 'gpu-inference-failed' },
+    } as const;
+    const lighter = noticeFor(toLite, true);
+    expect(lighter?.title).toBe('Switched to a lighter mode');
+    expect(lighter?.description).not.toMatch(/processor/);
+    expect(lighter?.description).toMatch(/from the beginning/);
+    const cpu = noticeFor(toCpu, true);
+    expect(cpu?.title).toBe('Switched to a slower mode');
+    expect(cpu?.description).toMatch(/processor/);
+    expect(cpu?.description).toMatch(/from the beginning/);
+    // at app start no clip is being analysed, so nothing starts again
+    const atStart = noticeFor(toCpu);
+    expect(atStart?.description).not.toMatch(/beginning|clip/);
+    for (const notice of [lighter, cpu, atStart]) expect(notice?.description).not.toMatch(/the same/);
+  });
+
   it('ignores warnings that need no toast', () => {
     const engine = new MockEngine(DEFAULT_MOCK_CONFIG);
     const off = bridgeEngine(engine, actor);

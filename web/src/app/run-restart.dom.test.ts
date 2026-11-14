@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClipMetadata } from '@/contracts/posetrack';
 import type { EngineApi, ProgressInfo } from '@/contracts/protocol';
+import { toast } from '@/ui/toaster';
 import { bridgeEngine } from './bridge';
 import { useSessionStore } from './stores/session';
 import { useViewStore } from './stores/view';
@@ -42,6 +43,8 @@ beforeEach(() => {
 afterEach(() => {
   dispose();
   session().clear();
+  // an engine-level note (slow mode) is kept across clips on purpose
+  session().resetEngineWarnings();
   useViewStore.getState().reset();
   vi.clearAllMocks();
 });
@@ -128,6 +131,55 @@ describe('run-started (a run that begins again mid-stream)', () => {
     // the engine has consumed 14 frames but the streamer has only emitted 8 of them so far
     engine.emit({ type: 'progress', progress: progress(14) });
     expect(session().processedFrames).toBe(8);
+  });
+});
+
+describe('a restart and a kept result, as the user sees them (M4-1, M4-2, M4-3)', () => {
+  const titles = () => vi.mocked(toast).mock.calls.map((call) => call[0]);
+
+  it('says so when a run starts again from the beginning with no change of mode', () => {
+    engine.emit({ type: 'run-started', fresh: true, resumedFrames: 0 });
+    expect(titles()).toEqual([]);
+    chunk(0, 0, 8);
+    frames.run();
+    engine.emit({ type: 'run-started', fresh: true, resumedFrames: 0 });
+    expect(titles()).toEqual(['Analysis restarted']);
+  });
+
+  it('leaves the explaining to the notice when a change of mode restarted the run', () => {
+    engine.emit({ type: 'run-started', fresh: true, resumedFrames: 0 });
+    chunk(0, 0, 8);
+    frames.run();
+    engine.emit({
+      type: 'warning',
+      warning: { code: 'slow-mode', message: 'x', detail: { tier: 'webgpu-lite', reason: 'stalled' } },
+    });
+    engine.emit({ type: 'run-started', fresh: true, resumedFrames: 0 });
+    expect(titles()).toEqual(['Switched to a lighter mode']);
+    const [, options] = vi.mocked(toast).mock.calls[0] as [string, { description: string }];
+    expect(options.description).toMatch(/from the beginning/);
+  });
+
+  it('says nothing when a run resumes, and drops the resumed note once a run starts from the beginning', () => {
+    session().addWarning({ code: 'resumed', message: 'Continuing from saved results.' });
+    session().addWarning({ code: 'decoder-fallback', message: 'x' });
+    engine.emit({ type: 'run-started', fresh: false, resumedFrames: 8 });
+    expect(titles()).toEqual([]);
+    expect(session().warnings.map((w) => w.code)).toEqual(['resumed', 'decoder-fallback']);
+    engine.emit({ type: 'run-started', fresh: true, resumedFrames: 0 });
+    expect(session().warnings.map((w) => w.code)).toEqual(['decoder-fallback']);
+  });
+
+  it('gives the share the kept result covers, which can be less than was streamed', () => {
+    engine.emit({ type: 'run-started', fresh: true, resumedFrames: 0 });
+    chunk(0, 0, 16);
+    frames.run();
+    expect(session().processedFrames).toBe(16);
+    session().endClip();
+    // the engine's partial result holds only what it had stored: the frames that start before frame 6
+    const partial = { analysedFrames: 6, plannedFrames: 24, analysedUntilUs: testScene.frames.ptsUs[6] as number };
+    engine.emit({ type: 'final', result: { ...finalOf(), header: { extensions: { partial } } as never } });
+    expect(session().processedFrames).toBe(6);
   });
 });
 

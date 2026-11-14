@@ -20,6 +20,17 @@ export function isPartialResult(result: FinalResult | null): boolean {
   return result?.header.extensions?.partial !== undefined;
 }
 
+/** Frames a partial result covers: those that start before the end of its last analysed frame; null when unmarked. */
+function framesCovered(result: FinalResult): number | null {
+  const partial = result.header.extensions?.partial as { readonly analysedUntilUs?: unknown } | undefined;
+  const until = partial?.analysedUntilUs;
+  if (typeof until !== 'number') return null;
+  const { ptsUs } = result.frames;
+  let covered = 0;
+  while (covered < ptsUs.length && (ptsUs[covered] as number) < until) covered++;
+  return covered;
+}
+
 export interface SessionState {
   readonly clip: ClipMetadata | null;
   readonly frameTable: FrameTableColumns | null;
@@ -157,6 +168,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       progress: null,
       etaS: null,
       processedFrames: 0,
+      // "Continuing from saved results" belonged to the run this one replaces
+      warnings: s.warnings.filter((w) => w.code !== 'resumed'),
     }));
   },
   setProgress: (progress, etaS) => set({ progress, etaS }),
@@ -181,7 +194,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       kept: partial ? true : s.kept,
       partialPending: false,
       revision: s.revision + 1,
-      processedFrames: partial ? s.processedFrames : result.frames.ptsUs.length,
+      // the cue describes the result shown, which after an automatic restart can hold less than was streamed
+      processedFrames: partial ? (framesCovered(result) ?? s.processedFrames) : result.frames.ptsUs.length,
     }));
   },
   addWarning(warning) {

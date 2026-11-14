@@ -2,7 +2,7 @@ import type { ActorRefFrom } from 'xstate';
 import type { EngineApi } from '@/contracts/protocol';
 import { toast } from '@/ui/toaster';
 import type { appMachine } from './machine';
-import { noticeFor } from './notices';
+import { noticeFor, RESTART_NOTICE } from './notices';
 import { ChunkQueue, type FlushScheduler, frameScheduler } from './results/chunk-queue';
 import { EtaSmoother } from './results/eta';
 import { useSessionStore } from './stores/session';
@@ -21,6 +21,8 @@ export function bridgeEngine(
   const eta = new EtaSmoother();
   const session = useSessionStore.getState;
   const queue = new ChunkQueue((chunks) => session().addChunks(chunks), schedule);
+  /** A notice about a change of mode was shown since the last run started: it already explains a restart. */
+  let noticedSinceRun = false;
   const offs = [
     engine.on('opened', () => {
       eta.reset();
@@ -28,6 +30,11 @@ export function bridgeEngine(
     }),
     engine.on('run-started', (e) => {
       eta.reset();
+      // the engine restarted a run that had shown progress, from the beginning and with nothing else to say why
+      if (e.fresh && session().processedFrames > 0 && !noticedSinceRun) {
+        toast(RESTART_NOTICE.title, { id: 'run-restarted', description: RESTART_NOTICE.description });
+      }
+      noticedSinceRun = false;
       // a fresh stream drops what is queued from the run it replaces; a resumed one keeps it
       if (e.fresh) queue.discard();
       else queue.flush();
@@ -44,9 +51,14 @@ export function bridgeEngine(
       session().setFinal(e.result);
     }),
     engine.on('warning', (e) => {
-      session().addWarning(e.warning);
-      const notice = noticeFor(e.warning);
-      if (notice) toast(notice.title, { id: e.warning.code, description: notice.description });
+      const s = session();
+      const analysing = s.clip !== null && s.final === null && !s.kept;
+      s.addWarning(e.warning);
+      const notice = noticeFor(e.warning, analysing);
+      if (notice) {
+        noticedSinceRun = true;
+        toast(notice.title, { id: e.warning.code, description: notice.description });
+      }
     }),
     engine.on('state', (e) => {
       if (e.state === 'done') actor.send({ type: 'ENGINE_DONE' });
