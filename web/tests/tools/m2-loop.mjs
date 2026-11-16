@@ -63,6 +63,8 @@ function initScript(stopOnState) {
   window.Worker = class extends Orig {
     constructor(url, opts) {
       super(url, opts);
+      // the stall supervisor's timer worker is not an engine generation
+      if (opts?.name === 'skeletal-ticker') return;
       generation++;
       const gen = generation;
       push({ k: 'spawn', gen, name: opts?.name ?? '' });
@@ -231,7 +233,7 @@ async function runOne(clip, index) {
         break;
       }
       const pct = Number(/(\d+)%/.exec(st.pill)?.[1] ?? -1);
-      const slower = /Switched to a slower mode/.test(st.body);
+      const slower = /Switched to a (slower|lighter) mode/.test(st.body);
       if (slower) run.stepdowns = Math.max(run.stepdowns, 1);
       const text = `${pct}|${slower}`;
       if (pct !== lastPct || text !== lastText) {
