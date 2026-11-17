@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vincentdo1/volleyball-motion-tracker/blob/main/web/src/contracts/posetrack.schema.json",
+  "title": "PoseTrack v1",
+  "description": "Tracked 2D Halpe26 skeletons and the ball track for one clip. Times are integer microseconds on the presentation timeline; coordinates are display pixels after rotation, origin top-left. Column lengths, PTS order and frame-table membership are checked by validatePoseTrackSemantics().",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "schemaVersion",
+    "createdAt",
+    "generator",
+    "clip",
+    "timebase",
+    "coordinateSpace",
+    "skeleton",
+    "frames",
+    "tracks",
+    "ball",
+    "models",
+    "processing"
+  ],
+  "properties": {
+    "format": { "const": "vbt.posetrack" },
+    "schemaVersion": { "type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$" },
+    "createdAt": { "$ref": "#/$defs/isoTime" },
+    "generator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "commit"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "commit": { "type": ["string", "null"] }
+      }
+    },
+    "clip": { "$ref": "#/$defs/clip" },
+    "timebase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "clock"],
+      "properties": { "unit": { "const": "us" }, "clock": { "const": "presentation" } }
+    },
+    "coordinateSpace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "width", "height", "origin"],
+      "properties": {
+        "kind": { "const": "display-px" },
+        "width": { "$ref": "#/$defs/posInt" },
+        "height": { "$ref": "#/$defs/posInt" },
+        "origin": { "const": "top-left" }
+      }
+    },
+    "skeleton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "keypoints", "values"],
+      "properties": {
+        "name": { "const": "halpe26" },
+        "keypoints": { "type": "array", "items": { "type": "string" }, "minItems": 26, "maxItems": 26 },
+        "values": { "const": ["x", "y", "score"] }
+      }
+    },
+    "frames": { "$ref": "#/$defs/frameTable" },
+    "tracks": { "type": "array", "items": { "$ref": "#/$defs/track" } },
+    "ball": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/ball" }] },
+    "models": { "type": "array", "items": { "$ref": "#/$defs/model" } },
+    "processing": { "$ref": "#/$defs/processing" },
+    "extensions": { "type": "object" }
+  },
+  "$defs": {
+    "isoTime": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "us": { "type": "integer", "minimum": 0 },
+    "posInt": { "type": "integer", "minimum": 1 },
+    "unit": { "type": "number", "minimum": 0, "maximum": 1 },
+    "numOrNull": { "type": ["number", "null"] },
+    "flags": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } },
+    "tierId": { "enum": ["webgpu-quality", "webgpu-default", "webgpu-lite", "webgpu-fp32", "wasm-mt", "wasm-st"] },
+    "clip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "sizeBytes",
+        "lastModifiedMs",
+        "fingerprint",
+        "container",
+        "mimeType",
+        "videoCodec",
+        "audioCodec",
+        "codedWidth",
+        "codedHeight",
+        "rotation",
+        "displayWidth",
+        "displayHeight",
+        "durationUs",
+        "firstPtsUs",
+        "frameCount",
+        "nominalFps",
+        "variableFrameRate",
+        "hdr"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "sizeBytes": { "type": "integer", "minimum": 0 },
+        "lastModifiedMs": { "type": ["integer", "null"] },
+        "fingerprint": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "container": { "type": "string", "minLength": 1 },
+        "mimeType": { "type": ["string", "null"] },
+        "videoCodec": { "type": "string", "minLength": 1 },
+        "audioCodec": { "type": ["string", "null"] },
+        "codedWidth": { "$ref": "#/$defs/posInt" },
+        "codedHeight": { "$ref": "#/$defs/posInt" },
+        "rotation": { "enum": [0, 90, 180, 270] },
+        "displayWidth": { "$ref": "#/$defs/posInt" },
+        "displayHeight": { "$ref": "#/$defs/posInt" },
+        "durationUs": { "$ref": "#/$defs/us" },
+        "firstPtsUs": { "$ref": "#/$defs/us" },
+        "frameCount": { "type": "integer", "minimum": 0 },
+        "nominalFps": { "type": "number", "minimum": 0 },
+        "variableFrameRate": { "type": "boolean" },
+        "hdr": { "type": "boolean" }
+      }
+    },
+    "frameTable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ptsUs", "durationUs", "flags"],
+      "properties": {
+        "ptsUs": { "type": "array", "items": { "$ref": "#/$defs/us" } },
+        "durationUs": { "type": "array", "items": { "$ref": "#/$defs/us" } },
+        "flags": { "$ref": "#/$defs/flags" }
+      }
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "colorSlot", "firstPtsUs", "lastPtsUs", "samples"],
+      "properties": {
+        "id": { "$ref": "#/$defs/posInt" },
+        "kind": { "const": "person" },
+        "label": { "type": "string" },
+        "colorSlot": { "type": "integer", "minimum": 0 },
+        "firstPtsUs": { "$ref": "#/$defs/us" },
+        "lastPtsUs": { "$ref": "#/$defs/us" },
+        "samples": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ptsUs", "box", "boxScore", "kp", "kpFlags", "sampleFlags"],
+          "properties": {
+            "ptsUs": { "type": "array", "items": { "$ref": "#/$defs/us" }, "minItems": 1 },
+            "box": { "type": "array", "items": { "$ref": "#/$defs/numOrNull" } },
+            "boxScore": { "type": "array", "items": { "$ref": "#/$defs/unit" } },
+            "kp": { "type": "array", "items": { "$ref": "#/$defs/numOrNull" } },
+            "kpFlags": { "$ref": "#/$defs/flags" },
+            "sampleFlags": { "$ref": "#/$defs/flags" }
+          }
+        },
+        "attributes": { "type": "object" }
+      }
+    },
+    "ball": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["samples"],
+      "properties": {
+        "samples": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ptsUs", "xy", "radius", "confidence", "visibility", "source"],
+          "properties": {
+            "ptsUs": { "type": "array", "items": { "$ref": "#/$defs/us" } },
+            "xy": { "type": "array", "items": { "$ref": "#/$defs/numOrNull" } },
+            "radius": { "type": "array", "items": { "$ref": "#/$defs/numOrNull" } },
+            "confidence": { "type": "array", "items": { "$ref": "#/$defs/unit" } },
+            "visibility": { "type": "array", "items": { "enum": [0, 1, 2] } },
+            "source": { "type": "array", "items": { "enum": [0, 1, 2] } }
+          }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "name", "version", "precision", "sha256", "backend", "inputSize", "license"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "role": { "enum": ["person-detector", "pose", "ball"] },
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "precision": { "enum": ["fp32", "fp16", "int8"] },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "backend": { "enum": ["webgpu", "wasm", "node-cpu"] },
+        "inputSize": { "type": "array", "items": { "$ref": "#/$defs/posInt" }, "minItems": 2, "maxItems": 2 },
+        "license": { "type": "string" }
+      }
+    },
+    "processing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["settings", "frameStride", "startedAt", "finishedAt", "elapsedMs", "device"],
+      "properties": {
+        "settings": { "$ref": "#/$defs/settings" },
+        "frameStride": { "$ref": "#/$defs/posInt" },
+        "startedAt": { "$ref": "#/$defs/isoTime" },
+        "finishedAt": { "$ref": "#/$defs/isoTime" },
+        "elapsedMs": { "type": "number", "minimum": 0 },
+        "device": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tier", "backend", "adapter", "browser"],
+          "properties": {
+            "tier": { "$ref": "#/$defs/tierId" },
+            "backend": { "enum": ["webgpu", "wasm"] },
+            "adapter": {
+              "anyOf": [
+                { "type": "null" },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["vendor", "architecture", "description"],
+                  "properties": {
+                    "vendor": { "type": "string" },
+                    "architecture": { "type": "string" },
+                    "description": { "type": "string" }
+                  }
+                }
+              ]
+            },
+            "browser": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tier", "backend", "models", "maxProcessFps", "detector", "pose", "tracker", "smoothing", "ball"],
+      "properties": {
+        "tier": { "$ref": "#/$defs/tierId" },
+        "backend": { "enum": ["webgpu", "wasm"] },
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["detector", "pose", "ball"],
+          "properties": {
+            "detector": { "type": "string" },
+            "pose": { "type": "string" },
+            "ball": { "type": ["string", "null"] }
+          }
+        },
+        "maxProcessFps": { "type": "number", "exclusiveMinimum": 0 },
+        "detector": {
+          "type": "object",
+          "required": ["inputSize", "scoreThreshold", "nmsIou", "cadence"],
+          "properties": {
+            "inputSize": { "$ref": "#/$defs/posInt" },
+            "scoreThreshold": { "$ref": "#/$defs/unit" },
+            "nmsIou": { "$ref": "#/$defs/unit" },
+            "cadence": { "$ref": "#/$defs/posInt" }
+          }
+        },
+        "pose": {
+          "type": "object",
+          "required": ["visibilityThreshold", "oksNms"],
+          "properties": { "visibilityThreshold": { "type": "number" }, "oksNms": { "$ref": "#/$defs/unit" } }
+        },
+        "tracker": {
+          "type": "object",
+          "required": ["lostTtlS", "stitchMaxGapS", "minTrackDurationS"],
+          "properties": {
+            "lostTtlS": { "type": "number", "minimum": 0 },
+            "stitchMaxGapS": { "type": "number", "minimum": 0 },
+            "minTrackDurationS": { "type": "number", "minimum": 0 }
+          }
+        },
+        "smoothing": {
+          "type": "object",
+          "required": ["algorithm", "maxGapFillS"],
+          "properties": {
+            "algorithm": { "type": "string" },
+            "maxGapFillS": { "type": "number", "minimum": 0 }
+          }
+        },
+        "ball": {
+          "type": "object",
+          "required": ["heatmapThreshold"],
+          "properties": { "heatmapThreshold": { "$ref": "#/$defs/unit" } }
+        }
+      }
+    }
+  }
+}

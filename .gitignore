@@ -56,3 +56,15 @@ env/
 .vscode/
 .idea/
 .ipynb_checkpoints/
+
+# web app
+web/node_modules/
+web/dist/
+web/public/models/
+web/test-results/
+web/playwright-report/
+web/coverage/
+web/.vite/
+web/.vitest/
+.wrangler/
+deploy/cloudflare/.wrangler/

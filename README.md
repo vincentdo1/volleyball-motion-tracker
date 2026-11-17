@@ -60,3 +60,32 @@ volleyball-tracker test_videos/volleyball_spike_attempt_02.mp4 output_videos/vol
 - `--model` / `--imgsz` / `--device` — ball/person detector weights, inference
   size, and device (`cuda`, `mps`, or `cpu`; auto-detected by default).
 - `--roi` — ROI-tracked ball inference (faster; intended for live mode).
+
+## Skeletal (web app)
+
+`web/` contains Skeletal, the in-browser successor: open a volleyball clip and get tracked, smoothed 2D skeletons for
+every player plus the ball, processed entirely on your device. Nothing is uploaded and no account is needed. Pick a
+player to add hand trails, ghost poses, joint angles and speed colours for that player. Results export as an MP4 with
+the overlay, a PNG frame, PoseTrack JSON or CSV; the MP4 and the PNG show the same view as the app.
+
+Skeletal targets desktop browsers. Chrome and Edge run the models on the GPU (WebGPU); where the GPU cannot run them,
+it switches to a slower CPU mode by itself. Safari and Firefox are tested with Playwright's WebKit and Firefox builds.
+Phones are best-effort.
+
+```bash
+cd web
+npm ci
+npm run fetch-models   # model files (about 160 MB) into a shared cache
+npm run dev            # http://127.0.0.1:5173
+```
+
+| Command (in `web/`) | What it does |
+|---|---|
+| `npm run build`, `npm run preview` | production build (with a size check) and a local server for it |
+| `npm run typecheck`, `npm run lint`, `npm test` | types, Biome, unit and DOM tests |
+| `npm run test:browser`, `npm run test:e2e` | tests in a real browser with WebGPU, and end-to-end runs of the app |
+| `npm run cf:seed-local`, then `npm run cf:dev` | the production build behind the Cloudflare Worker, locally |
+
+How it works: [docs/architecture.md](docs/architecture.md). Hosting: [deploy/README.md](deploy/README.md). Third-party
+licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+

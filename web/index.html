@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <meta name="theme-color" content="#0d1015" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content="Skeletal tracks every player and the ball in a volleyball clip and draws smooth skeletons over them. Everything runs in your browser; the video never leaves your device." />
+    <title>Skeletal</title>
+    <script>
+      // Resolve the theme before first paint so a light-theme user never sees a dark flash.
+      let theme = 'dark';
+      try {
+        const stored = JSON.parse(localStorage.getItem('vbt.appearance') || '{}').theme;
+        const preferLight = matchMedia('(prefers-color-scheme: light)').matches;
+        if (stored === 'light' || (stored !== 'dark' && preferLight)) theme = 'light';
+      } catch {}
+      document.documentElement.dataset.theme = theme;
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

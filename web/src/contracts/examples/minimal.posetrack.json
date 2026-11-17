@@ -1,0 +1,199 @@
+{
+  "format": "vbt.posetrack",
+  "schemaVersion": "1.0.0",
+  "createdAt": "2026-10-31T12:00:00.000Z",
+  "generator": {
+    "name": "volleyball-motion-tracker-web",
+    "version": "0.1.0",
+    "commit": null
+  },
+  "clip": {
+    "name": "serve.mp4",
+    "sizeBytes": 1048576,
+    "lastModifiedMs": 1761912000000,
+    "fingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "container": "mp4",
+    "mimeType": "video/mp4",
+    "videoCodec": "avc1.640028",
+    "audioCodec": null,
+    "codedWidth": 1280,
+    "codedHeight": 720,
+    "rotation": 0,
+    "displayWidth": 1280,
+    "displayHeight": 720,
+    "durationUs": 100000,
+    "firstPtsUs": 0,
+    "frameCount": 3,
+    "nominalFps": 30,
+    "variableFrameRate": false,
+    "hdr": false
+  },
+  "timebase": {
+    "unit": "us",
+    "clock": "presentation"
+  },
+  "coordinateSpace": {
+    "kind": "display-px",
+    "width": 1280,
+    "height": 720,
+    "origin": "top-left"
+  },
+  "skeleton": {
+    "name": "halpe26",
+    "keypoints": ["nose", "left_eye", "right_eye", "left_ear", "right_ear", "left_shoulder", "right_shoulder", "left_elbow", "right_elbow", "left_wrist", "right_wrist", "left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle", "head", "neck", "hip", "left_big_toe", "right_big_toe", "left_small_toe", "right_small_toe", "left_heel", "right_heel"],
+    "values": ["x", "y", "score"]
+  },
+  "models": [
+    {
+      "id": "dfine-s-coco.fp16",
+      "role": "person-detector",
+      "name": "D-FINE-S (COCO) fp16",
+      "version": "onnx-community/dfine_s_coco-ONNX@a3cf03147a9b86c78475139115c8ac142577352d",
+      "precision": "fp16",
+      "sha256": "327193f65c26ed0e14d916e94cd5d38758298f0b8726b5f169c6b30a85ab5ab5",
+      "backend": "webgpu",
+      "inputSize": [640, 640],
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "rtmpose-m-halpe26.fp16",
+      "role": "pose",
+      "name": "RTMPose-m body7 Halpe26 256x192 fp16",
+      "version": "mmpose rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192-4d3e73dd_20230605 (fp16 build)",
+      "precision": "fp16",
+      "sha256": "673466126f340320c2f0ebddb1514281af694294c006137b9293c85afaad7ef1",
+      "backend": "webgpu",
+      "inputSize": [192, 256],
+      "license": "Apache-2.0"
+    }
+  ],
+  "processing": {
+    "settings": {
+      "tier": "webgpu-default",
+      "backend": "webgpu",
+      "models": {
+        "detector": "dfine-s-coco.fp16",
+        "pose": "rtmpose-m-halpe26.fp16",
+        "ball": null
+      },
+      "maxProcessFps": 60,
+      "detector": {
+        "inputSize": 640,
+        "scoreThreshold": 0.3,
+        "trackerLowScore": 0.15,
+        "nmsIou": 0.7,
+        "minBoxHeightPx": 8,
+        "cadence": 1
+      },
+      "pose": {
+        "visibilityThreshold": 0.3,
+        "oksNms": 0.6,
+        "batchBuckets": [1, 2, 4, 8, 12, 16, 24, 32],
+        "batching": "buckets"
+      },
+      "tracker": {
+        "highScore": 0.5,
+        "lowScore": 0.15,
+        "newTrackScore": 0.6,
+        "matchCostMax": 0.8,
+        "lostTtlS": 1,
+        "confirmHits": 3,
+        "confirmWindowS": 0.2,
+        "eiouExpansions": [1.3, 1.6],
+        "costWeights": {
+          "eiou": 0.6,
+          "oks": 0.4,
+          "appearance": 0
+        },
+        "ocmWeight": 0.2,
+        "stitchMaxGapS": 1,
+        "minTrackDurationS": 0.5,
+        "duplicateOks": 0.5,
+        "duplicateOverlapFrac": 0.5
+      },
+      "smoothing": {
+        "algorithm": "kalman-rts",
+        "measurementSigmaBoxFrac": 0.012,
+        "minScore": 0.05,
+        "accelSigma": {
+          "torso": 10,
+          "head": 15,
+          "legs": 30,
+          "elbows": 40,
+          "wrists": 60
+        },
+        "gateSigma": 3.5,
+        "maxGapFillS": 0.3,
+        "lowConfidenceScore": 0.3,
+        "swapRepairGain": 0.3
+      },
+      "ball": {
+        "source": "auto",
+        "heatmapThreshold": 0.5,
+        "maxBlobsPerFrame": 3,
+        "detectorMinScore": 0.25,
+        "inputFps": {
+          "min": 25,
+          "max": 60
+        },
+        "staticBinFrac": 0.0046875,
+        "staticMinS": 1,
+        "staticMinFrac": 0.3,
+        "lockMaxAgeS": 0.6,
+        "gateBaseFrac": 0.0703125,
+        "gateRadiusMult": 12,
+        "gateRefFps": 30,
+        "gateMaxSteps": 6,
+        "gateExponent": 0.65,
+        "costRadiusWeight": 0.2,
+        "costConfWeight": 0.35,
+        "reacquireGapS": 0.26666666666666666,
+        "outlierMaxSpanS": 0.26666666666666666,
+        "outlierMaxRadii": 15,
+        "linearFillMaxS": 0.2,
+        "ballisticFillMaxS": 1,
+        "ballisticContextS": 0.3,
+        "ballisticMinSamples": 3,
+        "portraitGate": true
+      }
+    },
+    "frameStride": 1,
+    "startedAt": "2026-10-31T12:00:00.000Z",
+    "finishedAt": "2026-10-31T12:00:04.250Z",
+    "elapsedMs": 4250,
+    "device": {
+      "tier": "webgpu-default",
+      "backend": "webgpu",
+      "adapter": {
+        "vendor": "apple",
+        "architecture": "metal-3",
+        "description": ""
+      },
+      "browser": "chromium 149"
+    }
+  },
+  "frames": {
+    "ptsUs": [0, 33333, 66667],
+    "durationUs": [33333, 33334, 33333],
+    "flags": [3, 3, 3]
+  },
+  "tracks": [
+    {
+      "id": 1,
+      "kind": "person",
+      "label": "P1",
+      "colorSlot": 0,
+      "firstPtsUs": 0,
+      "lastPtsUs": 66667,
+      "samples": {
+        "ptsUs": [0, 33333, 66667],
+        "box": [600, 200, 700, 560, 610, 200, 710, 560, 620, 200, 720, 560],
+        "boxScore": [0.93, 0.93, 0.93],
+        "kp": [650, 228.8, 0.9, 653, 223.4, 0.9, 647, 223.4, 0.9, 657, 228.8, 0.9, 643, 228.8, 0.9, 668, 272, 0.9, 632, 272, 0.9, 675, 326, 0.9, 625, 326, 0.9, 678, 372.8, 0.9, 622, 372.8, 0.9, 660, 387.2, 0.9, 640, 387.2, 0.9, 662, 459.2, 0.9, 638, 459.2, 0.9, 663, 531.2, 0.9, 637, 531.2, 0.9, 650, 203.6, 0.9, 650, 261.2, 0.9, 650, 387.2, 0.9, 668, 552.8, 0.9, 632, 552.8, 0.9, 666, 549.2, 0.9, 634, 549.2, 0.9, 661, 542, 0.9, 639, 542, 0.9, 660, 228.8, 0.9, 663, 223.4, 0.9, 657, 223.4, 0.9, 667, 228.8, 0.9, 653, 228.8, 0.9, 678, 272, 0.9, 642, 272, 0.9, 685, 326, 0.9, 635, 326, 0.9, 688, 372.8, 0.9, 632, 372.8, 0.9, 670, 387.2, 0.9, 650, 387.2, 0.9, 672, 459.2, 0.9, 648, 459.2, 0.9, 673, 531.2, 0.9, 647, 531.2, 0.9, 660, 203.6, 0.9, 660, 261.2, 0.9, 660, 387.2, 0.9, 678, 552.8, 0.9, 642, 552.8, 0.9, 676, 549.2, 0.9, 644, 549.2, 0.9, 671, 542, 0.9, 649, 542, 0.9, 670, 228.8, 0.9, 673, 223.4, 0.9, 667, 223.4, 0.9, 677, 228.8, 0.9, 663, 228.8, 0.9, 688, 272, 0.9, 652, 272, 0.9, 695, 326, 0.9, 645, 326, 0.9, 698, 372.8, 0.9, 642, 372.8, 0.9, 680, 387.2, 0.9, 660, 387.2, 0.9, 682, 459.2, 0.9, 658, 459.2, 0.9, 683, 531.2, 0.9, 657, 531.2, 0.9, 670, 203.6, 0.9, 670, 261.2, 0.9, 670, 387.2, 0.9, 688, 552.8, 0.9, 652, 552.8, 0.9, 686, 549.2, 0.9, 654, 549.2, 0.9, 681, 542, 0.9, 659, 542, 0.9],
+        "kpFlags": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "sampleFlags": [0, 0, 0]
+      }
+    }
+  ],
+  "ball": null
+}
