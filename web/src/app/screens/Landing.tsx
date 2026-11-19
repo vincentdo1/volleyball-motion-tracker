@@ -73,7 +73,9 @@ export function Landing({ onFile, phase, fileName, mock }: LandingProps) {
               ))}
             </div>
           )}
-          <p className="text-[13px] text-text-2">Runs 100% in your browser. Works offline after the first visit. No account.</p>
+          <p className="text-[13px] text-text-2">
+            Runs 100% in your browser. Works offline after the first visit. No account.
+          </p>
         </section>
         <section
           aria-label="Illustration"
