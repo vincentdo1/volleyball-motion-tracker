@@ -79,6 +79,8 @@ export class FrameLoop {
   private held = 0;
   private framesDone: number;
   private lastPtsUs: number;
+  /** Frame-table index of the last frame handed to the pipeline (-1 before the first). */
+  private lastSubmitted = -1;
   private stageMs: Partial<StageTimings> = {};
 
   constructor(private readonly deps: FrameLoopDeps) {
@@ -151,6 +153,8 @@ export class FrameLoop {
       const index = indexOfPts(clip.frameTable.ptsUs, ptsUs);
       if (index >= plan.endIndex) return 'end';
       if (index < 0 || !plan.isProcessed(index)) return control.cancelled ? 'cancelled' : 'continue';
+      // Some muxers write a presentation time twice: the frame table holds it once, so the results must too.
+      if (index <= this.lastSubmitted) return control.cancelled ? 'cancelled' : 'continue';
       while (this.inFlight.length >= this.deps.maxInFlight) await this.consumeOldest();
       if (control.cancelled) return 'cancelled';
       this.submit(sample, index, ptsUs, releaseSample);
@@ -167,6 +171,7 @@ export class FrameLoop {
 
   private submit(sample: VideoSample, index: number, ptsUs: number, releaseSample: () => void): void {
     const { clip, plan, pipeline, ledger } = this.deps;
+    this.lastSubmitted = index;
     const frame = sample.toVideoFrame();
     const releaseFrame = ledger.acquire();
     const { metadata, frameTable } = clip;

@@ -3,7 +3,7 @@
  * `self.__WB_MANIFEST` with the build's precache list. The project compiles with the DOM lib, so the few worker
  * types used here are declared locally.
  */
-import { APP_CACHE_PREFIX, cacheMatchOptions, ORT_CACHE, routeRequest } from './routes';
+import { APP_CACHE_PREFIX, cacheMatchOptions, navigable, ORT_CACHE, routeRequest } from './routes';
 
 interface PrecacheEntry {
   readonly url: string;
@@ -92,7 +92,10 @@ self.addEventListener('fetch', (event) => {
       break;
     case 'app-shell':
       event.respondWith(
-        fetch(event.request).catch(async () => (await caches.match(SHELL_URL, shellMatchOptions)) ?? Response.error()),
+        fetch(event.request).catch(async () => {
+          const shell = await caches.match(SHELL_URL, shellMatchOptions);
+          return shell ? navigable(shell) : Response.error();
+        }),
       );
       break;
     case 'network':

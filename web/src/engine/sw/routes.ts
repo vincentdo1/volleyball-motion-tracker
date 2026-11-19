@@ -45,3 +45,18 @@ export function cacheMatchOptions(
   if (url.origin !== origin) return {};
   return precached.has(url.pathname) || url.pathname.startsWith(ORT_ASSET_BASE) ? { ignoreVary: true } : {};
 }
+
+/**
+ * A copy of the cached app shell that a navigation may use. A static host can answer the precached `/index.html` with
+ * a redirect (the Cloudflare Worker serves it at `/`); the cached response then has `redirected` set, and a browser
+ * refuses a redirected response for a navigation, so the offline reload fails. The copy keeps the body, status and
+ * headers and drops the redirect.
+ */
+export async function navigable(response: Response): Promise<Response> {
+  if (!response.redirected) return response;
+  return new Response(await response.blob(), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}

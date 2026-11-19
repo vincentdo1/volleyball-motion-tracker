@@ -21,6 +21,7 @@ import { MAX_IN_FLIGHT } from '../process/frame-loop';
 import { ProcessingRun, type RunHost } from '../process/processing-run';
 import { makePlan } from '../process/schedule';
 import { replayStoredFrames, resumeTracker } from '../process/tracker-resume';
+import { keepOrtFilesForOffline } from '../runtime/ort-offline';
 import { listSessions, MAX_SESSIONS } from '../store/session-index';
 import { type Manifest, openSessionStore, pruneSessions, type SessionStore } from '../store/session-store';
 import { fail, plainEngineError, toEngineError } from './engine-exception';
@@ -179,6 +180,8 @@ export class EngineCore {
       this.machine.transition('ready');
       this.post({ type: 'ready', ...ready });
       this.reply(command.requestId);
+      // The runtime files of a first visit passed the service worker by: keep them for an offline start.
+      void keepOrtFilesForOffline();
     } catch (error) {
       const engine = toEngineError(error);
       this.failEngine(engine);
