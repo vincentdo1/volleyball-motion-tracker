@@ -172,6 +172,12 @@ export type EngineEventOf<T extends EngineEventType> = Extract<EngineEvent, { re
 /** Main-thread API over the worker (implemented by `engine/client.ts`, mocked by the UI). */
 export interface EngineApi {
   readonly state: EngineState;
+  /**
+   * Loads the models for `options`. On an engine that is already initialised it re-initialises with the new options
+   * (the app does this between clips when a setting such as the quality opt-in changed): the worker is replaced, so
+   * nothing from the previous initialisation stays loaded. Rejects with `invalid-state` while a run is processing,
+   * paused or finalizing.
+   */
   init(options?: InitOptions): Promise<ReadyInfo>;
   open(file: File): Promise<OpenedInfo>;
   start(options?: StartOptions): Promise<void>;
