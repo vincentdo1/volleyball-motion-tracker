@@ -15,6 +15,10 @@ File ──> engine worker ─────────────────�
          finalize: stitch tracks, fix left/right swaps, Kalman + RTS smoothing, ball trajectory
          final PoseTrack result ────────────────────────────────────────────────────> player, timeline, export
 ```
+- Decoding: whatever the browser's WebCodecs decodes (H.264 everywhere; HEVC, VP9 and AV1 where the browser supports
+  them). There is no fallback decoder: the planned retry of an HDR clip's base-layer codec and frame extraction through
+  a `<video>` element are not built, so an unsupported codec ends with a message that names it and suggests an H.264
+  MP4 or another browser.
 - Inference: onnxruntime-web 1.31.1 on WebGPU (fp16 models), falling back to multi-threaded WebAssembly.
 - Rendering: Canvas2D overlay on a native `<video>`, synchronised with `requestVideoFrameCallback`.
 - Export: MP4 with the overlay (WebCodecs H.264, audio copied), PNG frame, JSON (PoseTrack v1), CSV.
@@ -31,6 +35,10 @@ File ──> engine worker ─────────────────�
 | Lite | phones, weak GPUs | D-FINE-S 640 fp16 -> RTMPose-s fp16 |
 | Compatibility | WebGPU without fp16 | D-FINE-S 640 fp32 -> RTMPose-s fp32 |
 | CPU | no usable WebGPU | D-FINE-S 480 fp32 -> RTMPose-s fp32, detector every 3rd frame |
+
+The capability check picks the tier; at each start-up the time of the warm-up inference can then move it down (a slow
+device gets Lite). That measurement is not stored between visits, so every start-up measures again (the plan's
+separate two-second benchmark cached per GPU adapter was not built).
 
 ## Code layout
 | Path | Purpose |
