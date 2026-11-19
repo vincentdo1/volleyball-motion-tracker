@@ -74,7 +74,8 @@ async function* decodeFrames(path: string, frameBytes: number, count: number): A
   }
 }
 
-describe('clip person boxes', () => {
+// A dump tool, not a check: it runs only when told where to write.
+describe.skipIf(!OUT)('clip person boxes', () => {
   it('dumps the detections of the first frames', async () => {
     if (!OUT) throw new Error('set VBT_OUT to the output json path');
     const videoPath = resolve(process.cwd(), '..', 'test_videos', CLIP);

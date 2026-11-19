@@ -78,7 +78,8 @@ function clipOf(dump: RawDump, firstPtsUs: number, durationUs: number): ClipMeta
 
 const array = (values: ArrayLike<number>) => Array.from(values, (v) => (Number.isFinite(v) ? v : null));
 
-describe('whole-clip tracking and finalize', () => {
+// A dump tool, not a check: it runs only when told what to read and where to write.
+describe.skipIf(!RAW_DIR || !OUT_DIR)('whole-clip tracking and finalize', () => {
   it('writes the finalized tracks of every raw dump', () => {
     if (!RAW_DIR || !OUT_DIR) throw new Error('set VBT_RAW_DIR and VBT_OUT_DIR');
     const settings = tuned(defaultSettings(DEVICE_TIERS['webgpu-default']));

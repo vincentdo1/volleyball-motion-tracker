@@ -5,7 +5,8 @@ import { isPreview, repoVideo } from './support';
  * Codex review F3 (and plan M4 "offline after first load"): a FRESH browser context loads the production build, waits
  * until the service worker controls the page, goes offline and reloads with no online reload in between. The landing
  * screen must appear (the review saw an empty page: the precached JS/CSS carried `Vary: Origin` and did not match the
- * browser's module requests). Then, where the models are in the context's cache, a clip is analysed offline.
+ * browser's module requests). The visit's set-up (models and runtime files cached) completes before the network goes
+ * away, and a clip is then analysed offline.
  *
  * Service workers are allowed here (unlike every other real-engine spec), on purpose.
  *   PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-offline
@@ -26,13 +27,19 @@ async function waitControlled(page: Page): Promise<void> {
   expect(await page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
 }
 
-/** Names of the Cache API caches and how many entries the model cache holds. */
+const ORT_CACHE = 'vbt-ort-v1';
+
+/** Names of the Cache API caches and how many entries the model and ORT runtime caches hold. */
 const cacheState = (page: Page) =>
-  page.evaluate(async (modelCache) => {
-    const names = await caches.keys();
-    const models = names.includes(modelCache) ? (await (await caches.open(modelCache)).keys()).length : 0;
-    return { names, models };
-  }, MODEL_CACHE);
+  page.evaluate(
+    async ([modelCache, ortCache]) => {
+      const names = await caches.keys();
+      const count = async (name: string) =>
+        names.includes(name) ? (await (await caches.open(name)).keys()).length : 0;
+      return { names, models: await count(modelCache), ort: await count(ortCache) };
+    },
+    [MODEL_CACHE, ORT_CACHE] as const,
+  );
 
 async function expectLanding(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible({ timeout: 30_000 });
@@ -61,6 +68,17 @@ test('F3: first visit -> service worker controls the page -> offline -> reload s
   // the build's precache is complete before the network goes away
   await expect
     .poll(async () => (await cacheState(page)).names.some((n) => n.startsWith('vbt-app-')), { timeout: 30_000 })
+    .toBe(true);
+  // "after the first visit": the visit's set-up is complete once the models and the runtime files are cached
+  await expect
+    .poll(
+      async () => {
+        const state = await cacheState(page);
+        // three models, and the runtime's loader and wasm (Chrome's WebGPU flavour loads both)
+      return state.models >= 3 && state.ort >= 2;
+      },
+      { timeout: 180_000 },
+    )
     .toBe(true);
   const before = await cacheState(page);
   failed.length = 0;
