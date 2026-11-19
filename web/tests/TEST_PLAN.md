@@ -27,7 +27,7 @@ task touches them. Tests are written next to the behaviour they check; cross-mod
 | `webkit` | Playwright WebKit 27.2 | headless | real (vendor `apple`) | M3: ORT `jspi` flavour, decode D1/D2, layout |
 | `firefox` | Playwright Firefox 157 | headed only (headless has no adapter) | real; needs the `device.queue.submit([])` kick | M3: Firefox ORT path, layout |
 | `phone` | `chrome-cft` with a phone device descriptor (touch, 390x844, DPR 3, `deviceMemory` 4) | headless | real, but tier forced by emulation | `webgpu-lite` selection, layout, touch targets; not a performance proxy |
-| `wasm` | `chrome-cft` with a tier override (`?tier=wasm-mt`, `?tier=wasm-st`, once the UI lands the switch) | new headless | ignored by the app | fallback ladder |
+| `wasm` | `chrome-cft` launched with `--disable-gpu` (no WebGPU adapter, so the engine picks `wasm-mt`; there is no `?tier=` URL switch in the app) | new headless | none | CPU tier accuracy and timing; `m4-tier-ladder.spec.ts` and `m4-restart.spec.ts` reach the lower tiers by fault injection |
 
 Binaries: Chrome for Testing is already in `~/Library/Caches/ms-playwright`. WebKit and Firefox live in a scratch path:
 `PLAYWRIGHT_BROWSERS_PATH=<scratch>/pw-browsers npx playwright install firefox webkit` (the probe README has the
@@ -80,20 +80,20 @@ Command notation: `[T]` tester-run, `[P]` persona-run (persona reports; tester r
 | Criterion | Check |
 |---|---|
 | all 11 clips open with presentable-frame counts and first PTS equal to ffprobe goldens | `tests/e2e/engine-open.spec.ts` / unit with `clips.json` |
-| open-VideoFrame counter 0 after run and after cancel | `?debug=1` `window.__engine` counter, e2e |
-| cancel acknowledged < 250 ms | e2e timing of `cancel` -> `cancelled` protocol message |
-| chunks stream with transfer; resume skips finished chunks | engine-harness e2e (`resume-cancel.spec.ts`) |
-| corrupted model gives `model-integrity` | e2e with a tampered model route |
-| device-lost simulation recovers | e2e with the gpu-lost hook |
+| open-VideoFrame counter 0 after run and after cancel | `src/engine/process/process.browser.test.ts`, `recovery.browser.test.ts` (stub ML, browser) |
+| cancel acknowledged < 250 ms | `process.browser.test.ts` (protocol timing) and `resume-cancel.spec.ts` (Discard to landing screen) |
+| chunks stream with transfer; resume skips finished chunks | `process.browser.test.ts` (zero-copy transfer, acknowledgements), `store/resume.browser.test.ts`, `resume-cancel.spec.ts` (M2-5), `m4-resume.spec.ts`, `m5-resume-ids.spec.ts` |
+| corrupted model gives `model-integrity` | `src/engine/runtime/ort-runtime.browser.test.ts` and `model-manager.browser.test.ts` (corrupted and missing model files) |
+| device-lost / failed inference recovers | `src/engine/recovery.browser.test.ts` (stub ML), `m4-restart.spec.ts`, `m4-tier-ladder.spec.ts` (real, fault injection) |
 
 ### M1 UI
 | Criterion | Check | Threshold |
 |---|---|---|
-| overlay p95 at 3840x2160, 12 players, all layers | `tests/e2e/perf.spec.ts` (Chrome, M5 Pro) | p95 <= 4 ms |
-| rVFC sync | `tests/e2e/sync.spec.ts`: 30 frame-steps on attempt_03, attempt_04, one pexels clip | drawn index equals frame-table index of `mediaTime` every step |
+| overlay p95 at 3840x2160, 12 players, all layers | `npm run test:perf` (`src/render/renderer.perf.browser.test.ts`; the e2e `perf.spec.ts` overlay test is `fixme`) | p95 <= 4 ms |
+| rVFC sync | `src/app/player/sync.browser.test.ts` (the app's player) and `tests/e2e/sync-baseline.spec.ts` (bare `<video>`: 30 steps on attempt_03, attempt_04, one pexels clip) | drawn index equals frame-table index of `mediaTime` every step |
 | interpolated joints dashed, gated bones not drawn | renderer unit/dom tests plus an e2e screenshot-free assertion on the renderer draw log | exact |
-| axe clean | `tests/e2e/a11y.spec.ts` on landing, processing, results, export, settings, each error state | zero violations |
-| keyboard path upload -> export | `tests/e2e/app-flow.spec.ts` keyboard-only | completes without a pointer |
+| axe clean | `src/app/a11y.browser.test.tsx` (landing and sheets, processing, results, export, empty/error states, about, wide light layout); `tests/e2e/a11y.spec.ts` (diagnostics page only) | zero violations |
+| keyboard path upload -> export | `tests/e2e/m5-keyboard.spec.ts` (real engine, production build) and `src/app/keyboard.browser.test.tsx` (mock) | completes without a pointer |
 
 ### M1 tester
 TEST_PLAN.md; `clips.json`; harness reproduces 06 §2.1 within 0.1 pt; e2e suites runnable on each port.
@@ -109,47 +109,104 @@ TEST_PLAN.md; `clips.json`; harness reproduces 06 §2.1 within 0.1 pt; e2e suite
 ### M3
 | Criterion | Check | Threshold |
 |---|---|---|
-| MP4 overlay + audio, A/V sync | `export.spec.ts`: mediabunny in the page reads the MP4 (frame count, PTS list, audio track) | frame count and timestamps equal the source's presentable frames; audio start offset <= 1 frame on the edit-list clip |
+| MP4 overlay + audio, A/V sync | `export.spec.ts`: ffprobe reads the MP4 (frame count, PTS list, audio track); `src/engine/export/export.browser.test.ts` reads it with mediabunny | frame count and timestamps equal the source's presentable frames; audio start offset <= 1 frame on the edit-list clip |
 | PNG, JSON, CSV | `export.spec.ts` | JSON validates against `posetrack.schema.json` (ajv 2020); CSV header and row count exact; PNG dimensions equal display size |
-| resume after reload | `resume-cancel.spec.ts` | finished chunks skipped, final result equals an uninterrupted run |
-| `wasm-mt` tier | accuracy harness on a `?tier=wasm-mt` bench dump | recall >= 0.82 static |
+| resume after reload | `resume-cancel.spec.ts` (M2-5), `m4-resume.spec.ts`, `m5-resume-ids.spec.ts`; `src/engine/store/resume.browser.test.ts` (stub ML) | finished chunks skipped, ids of later arrivals above every earlier id, final result equals an uninterrupted run (stub ML: identical; real: same track count and no identity merge) |
+| `wasm-mt` tier | accuracy harness on a bench dump of the app on the CPU tier (Chrome `--disable-gpu`, see section 2 `wasm`) | recall >= 0.82 static |
 | WebKit headless, Firefox headed e2e | cross runner (§2) | green on the tagged subset |
 | gpu-lost recovery | e2e hook | job completes or reports `gpu-lost` with retry |
 
 ### M4
 | Criterion | Check |
 |---|---|
-| PWA offline after first load | e2e: load, wait for service worker, `context.setOffline(true)`, reload, open the app and a cached-model run |
+| PWA offline after first load | `tests/e2e/m5-offline.spec.ts`: fresh context, wait for the service worker to control the page, `context.setOffline(true)`, reload (no online reload), landing; then an analysis from the caches after an online run |
 | `wrangler dev` headers and R2 routes | `npm run cf:dev` then curl: COOP, COEP, CORP, range requests on `/models/*` and `/ort/*` |
 | first-visit app JS <= 1 MB brotli (excl. ORT wasm, models) | script over `dist/assets` with brotli level 11 |
 | licence audit | `THIRD_PARTY_NOTICES.md` against `package-lock.json` and `models.lock.json`; no AGPL/GPL |
 | real-device checks | manual §8 |
 
-## 5. Suites and when they switch on
+## 5. Coverage map: what runs today
 
-Every e2e suite exists from M1 as a skeleton. A feature that has not landed is `test.fixme('<owner>: <feature>')` so the
-gap is listed, not hidden. The owner removes `fixme` (or asks the tester) in the same change that lands the feature.
+Indexed from the files on disk at `web-app-v1` @ 6b4b901. Engine column: **mock** = the in-page mock engine
+(`?mock=...`, `src/app/mock/`), **stub** = the real engine and worker with stubbed ML (`src/engine/testing/`), **real** = real
+engine, real ONNX models, real WebGPU or WASM. A suite is only listed for what it asserts; where nothing covers a
+behaviour it is named under "Gaps" below. Counts are `npm run ... -- --list`-style counts of the current files (a
+parametrised test counts once per case); numbers of passing tests are in section 10 with their revision and environment.
 
-| Suite | State | Needs | Mock switch |
+### 5.1 Vitest projects (`vitest.config.ts`: unit, dom, browser, perf, harness)
+
+| Project | Command | Files | Engine | What it asserts |
+|---|---|---|---|---|
+| unit (Node) | `npm test` | `src/**/*.test.ts`, `tests/unit/**` (65 files) | none (pure functions) or fake ORT/store | contracts: PoseTrack schema, codec, frame table, halpe26, models lock; ingest: MP4 boxes, fingerprint, frame table; process: batch packer, schedule, progress, watchdog, streamer, finalize, `tracker-resume` (newcomers numbered above the whole session's maximum, tail-only replay, no stored marks -> one scan); runtime: `session-factory` (earlier sessions released when a later one fails, original error kept), ORT provider; store: chunk codec/writer; `sw/routes` (precached assets served from the cache, `Vary` ignored only for the precache list and versioned ORT files); export CSV and frame source; ML: tracker, association, Kalman/RTS, smoothing, swap repair, ball (`ball-stage`: gate reset between clips, cancelled run clears pending frames), finalize; renderer maths (angles, ghosts, trails, velocity in time units, palette, `frame-source` reference window in time); app results (`remap`, `timeline-geometry`: lane columns and playhead in timestamp space, seek by pointer), mock engine. `tests/unit`: clip goldens, harness metrics/tracking/tracks/ball scoring, ignore regions, track labels |
+| dom (happy-dom) | `npm test` | `*.dom.test.ts(x)` (15 files) | mock | machine transitions with the mock engine (25 cases), `engine-lifecycle` `ensureReady` (re-initialises when quality changes, both directions), `run-restart` (a run that begins again mid-stream), bridge notices, Landing phase, Problem screens, About, Settings (Reset preferences), ExportSheet (Cancel), ResumeDialog, Hints, Layers panel, UI primitives and theme |
+| browser | `npm run test:browser` | `src/**/*.browser.test.ts(x)` except `*.perf.*` (29 files) | stub, or real ORT/WebGPU where the name says so | **App** (`App.browser`: Preparing state after a file is chosen, landing -> results -> focus/step/export, StrictMode starts once, Keep/partial exports, empty state, error action, `#/about`; `a11y.browser`: axe on landing, processing, results, export, empty/error, wide layout in light; `keyboard.browser`, `layout.browser`, `Timeline.browser`: lane geometry in time, playhead, >= 44 px rows for touch and 28 px for a mouse; `png.browser`; player `controller` and `sync`: drawn index equals the frame-table index). **Engine** (stub ML): open-clip on the repository clips (counts, first PTS, rejects, rotation), process (PTS keys, no open VideoFrame, cancel < 250 ms, 4 unacknowledged chunks), recovery (stall restart and step-down, inference failure, watchdog, sleep), run identity, resume (`store/resume`: identical to an uninterrupted run, newcomer ids above every stored id, settings change ignores chunks, complete session skips decoding), engine-core (init, failed init releases sessions, partial result, finalizing progress), spool sweep and cleanup, exports (JSON schema, CSV, MP4 timestamps and audio, range, cancel, partial), MP4 overlay drawn by the app renderer. **Real ML**: `gpu.browser` (WGSL parity with the CPU reference), `ort-runtime` (real sessions, cache, integrity, download errors), `frame-pipeline` (several frames in flight), `clip-state` (clips in one engine equal fresh engines: ballless clip then normal clip, cancel then new clip; the ORT sessions are faked), `renderer.browser` (goldens, gated bones, dashed inferred) |
+| perf | `npm run test:perf` | `src/render/renderer.perf.browser.test.ts` (2 tests) | none (synthetic scene) | flushed overlay p95 <= 4 ms at 3840x2160, 12 players, every layer (and with the focus layers); best of up to three repetitions, every attempt printed, a retry pass labelled (section 6) |
+| harness (Node) | `npm run test:harness` | `src/**/*.harness.ts`, `tests/harness/*.harness.ts` (5 files) | recorded predictions / Node ORT | `bakeoff-reproduction` (TS scorer = the 06 §2.1 numbers within 0.1 pt, with a mutation check), `src/ml/harness/*` (static set, runs, clip boxes and tracks), `src/render/gate-coverage` |
+
+### 5.2 Playwright (`playwright.config.ts`, project `chrome-cft`; `npm run test:e2e`)
+
+Mock end-to-end runs on the dev server or the build; every real-engine spec needs `E2E_TARGET=preview` (the production
+build; the dev server shows the StrictMode initialisation error, M2-2) and skips itself otherwise.
+
+| File | Engine | What it asserts | State |
 |---|---|---|---|
-| `smoke.spec.ts` | enabled | M0 | none |
-| `sync-baseline.spec.ts` | enabled | a bare `<video>`: rVFC `mediaTime` maps back to the `clips.json` frame table (30 steps first frames, 6 last frames; attempt_03, attempt_04, pexels) | none |
-| `cross-env.spec.ts` | enabled (`@cross`) | isolation, real WebGPU adapter, WebCodecs, rVFC in every browser | none |
-| `a11y.spec.ts` | enabled for the M0 page (dark and light); product screens `fixme` | UI screens | `?mock=1` |
-| `app-flow.spec.ts` | `fixme` (UI) | shell + mock engine | `?mock=1[,fast][,empty]` |
-| `app-sync.spec.ts` | `fixme` (UI) | player with the `?debug=1` hook | `?mock=1,fast` |
-| `errors.spec.ts` | `fixme` (UI), one test per code in `ERROR_DEFAULTS` | UI error states | `?mock=error:<code>` |
-| `perf.spec.ts` | `fixme` (UI, ML, backend) | renderer, pipeline | synthetic 12-player track at 3840x2160 |
-| `export.spec.ts` | `fixme` (backend, UI; M3) | export module | `?mock=1` first, real engine later |
-| `resume-cancel.spec.ts` | `fixme` (backend) | engine harness (`window.__engine`) | stub pipeline |
-| `engine-open.spec.ts` | `fixme` (backend), one test per `clips.json` clip | ingest | none |
+| `smoke.spec.ts` | real | isolation, a real WebGPU adapter, ORT in a module worker; ORT files and models served same-origin with isolation headers | runs |
+| `sync-baseline.spec.ts` (`@cross`) | none (bare `<video>`) | rVFC `mediaTime` maps to the golden frame table over 30 first and 6 last frames, att03, att04, pexels | runs |
+| `cross-env.spec.ts` (`@cross`) | none | isolation, adapter, WebCodecs, rVFC in the browser | runs |
+| `a11y.spec.ts` | none | axe on the diagnostics page, dark and light | 1 test runs; **2 `fixme`** (product-screen axe, keyboard-only path) are covered by `src/app/a11y.browser.test.tsx` and `m5-keyboard.spec.ts` and stay `fixme` until deleted |
+| `app-flow.spec.ts`, `app-sync.spec.ts` | mock | upload -> results, empty result, cancel; drawn index over 30 steps | **all `fixme`** (6 tests): superseded by `App.browser`, `machine.dom`, `player/sync.browser` and `m4-*`; not run |
+| `errors.spec.ts` | mock, then real | one test per `ERROR_DEFAULTS` code (20): the title and a way forward; real engine: not a video, empty file, damaged middle, truncated file (M2-6), a clip with nobody ("No players found"), seven codec clips (av1, 240 fps, 4K60, VFR, HEVC 10-bit rot90, HEVC portrait, VP9) complete | runs |
+| `engine-open.spec.ts` | real | 11 clips x 2: complete with the golden frame count, players, lanes, overlay; the stage stays >= 240 px tall; M2-1 (leaves 0 %) | runs |
+| `export.spec.ts` | real | att03 and beach: JSON keyed by the golden PTS table and schema-valid; CSV header and row count; PNG display size; MP4 frame count, PTS list, size and audio | runs |
+| `resume-cancel.spec.ts` | real | Discard < 250 ms and the same clip reruns; Keep shows the analysed part; Discard then an immediate new file (M2-8); a kept partial result's JSON (partial header, golden frame table, same people as the view, skipped flags), CSV (header, row count, track ids) and MP4 (frame count, duration) have the right content (M2-4, F11); reload -> Continue skips the finished chunks (M2-5) | runs |
+| `perf.spec.ts` | real / none | gtu (33 s) done in <= 60 s; first skeletons <= 3 s; overlay p95 | 2 run, **1 `fixme`** (overlay p95 lives in the vitest perf project) |
+| `m4-restart`, `m4-cancel-recovery`, `m4-finalize`, `m4-keep`, `m4-resume`, `m4-tier-ladder`, `m4-pick-survives`, `m4-reduced-motion`, `m4-visual` | real, with fault injection from `m4-support.ts` | worker stall restart and step-down, failed inference, Cancel at each moment of a recovery, finalize hang, Keep after cancel, resume after reload (monotonic pill, no hole), "Try a lighter mode" ladder, picks survive the end of the analysis, exports under reduced motion, visual and colour checks on 8 clips (tests do not use the service worker) | runs |
+| `m5-offline.spec.ts` | real | F3: fresh context, service worker controls the page, offline reload with no online reload, landing appears; after an online run, offline reload and a different clip analysed from the caches | passes on `vite preview`; **fails through the Cloudflare Worker (M5-4)**, run it there too |
+| `m5-ball-gate.spec.ts` | real | F2: a clip after a ballless clip in the same engine equals the same clip in a fresh page (tracks, ball samples and their source) | runs |
+| `m5-quality.spec.ts` | real | F4: Settings quality off/on/off gives `webgpu-default`/`webgpu-quality` (D-FINE-M)/`webgpu-default` in the exported JSON | runs |
+| `m5-resume-ids.spec.ts` | real | F1: gtu reloaded at about 50 %, resumed; later arrivals have ids above all earlier ones, ids unique, compared with an uninterrupted run | runs |
+| `m5-keyboard.spec.ts` | real | M1: keyboard only, landing -> results -> pick a player -> timeline arrows -> Export -> JSON download | runs |
+| `m5-vfr-timeline.spec.ts` | real | F5 on a page: a clip with 100 frames in the first second and 10 in the next 8.1 s (cut with ffmpeg into `~/.cache/.../m5-cases/`, recreated by the spec if missing): clicks at 5-95 % of the track seek to the frame on screen at that time, the playhead stands at that frame's time | runs |
+| `m5-ui-items.spec.ts` | real, one mock error | UI/UX ranks 1, 4, 7, 9: "Preparing analysis" right after a file is chosen, Cancel in the export sheet, codec named as HEVC on the error screen, "Reset preferences" | runs |
+
+Cross-browser runners: `tests/playwright.cross.config.ts` (WebKit headless + Firefox headed: `@cross` specs and
+`cross-e2e.spec.ts`), `tests/playwright.webkit-full.config.ts` (WebKit: engine-open, export, errors, resume-cancel,
+cross-e2e, smoke; the M2-5 reload test skips on WebKit, whose OPFS refuses sync handles). Cloudflare Worker: any e2e
+spec with `E2E_TARGET=preview E2E_SERVER=cf PORT=8787` after `npm run cf:seed-local`.
+
+### 5.3 Where each kind of coverage is
+
+- **Unit and dom (no browser, mock or fake dependencies):** logic and UI state: tables 5.1 rows unit and dom.
+- **Browser, stubbed ML:** worker protocol, ingest, export, recovery, storage; WebCodecs and OPFS are real.
+- **Browser or e2e, real models:** `gpu.browser`, `ort-runtime`, `frame-pipeline`, and every real-engine Playwright spec.
+- **Mock e2e:** only the 20 mock cases of `errors.spec.ts` (title and recovery action per error code).
+- **Real pipeline on the production build:** the real-engine Playwright specs above, scored for accuracy by the harness
+  (`score.ts`, `m2-*` tools, section 7).
+- **Platform:** WebKit and Firefox runners, `E2E_SERVER=cf`, and the manual checks of section 8; Playwright WebKit and
+  Firefox are not release Safari and Firefox.
+
+### 5.4 Gaps (named, not hidden)
+
+- Overlay timing in an e2e page (the `perf.spec.ts` `fixme`) is only measured by the vitest perf project.
+- The 6 `fixme` tests of `app-flow`/`app-sync` and the 2 of `a11y.spec.ts` are not run; each has a replacement named in
+  the table. They are kept only as pointers and may be deleted by their owner.
+- First-visit offline analysis: a context that never analysed has no models cached (the app downloads a model when a
+  clip starts), so `m5-offline` analyses offline only after an online run. Cloudflare's own offline behaviour is not tested.
+- Real devices (section 8) and release Safari/Firefox.
+- The no-ball gate of F2 is not observed directly by `m5-ball-gate`; the test shows the same result as a fresh engine.
 
 ## 6. Flake policy
 
 - No retries in CI config by default (`retries: 0`); a failure is investigated, not re-run until green.
 - Timing assertions use a budget measured over many samples (p95 or median), never a single sample, and live in the perf
   suite so functional suites never fail on speed.
-- One automatic re-run is allowed only for suites tagged `@gpu-timing`, and the run is reported as "passed on retry".
+- Timing budgets in the vitest `perf` project (the renderer's 4 ms p95) keep the best of up to **three** repetitions and
+  stop at the first one within budget: whatever else a machine does only adds time, a real regression fails every
+  repetition. Every attempt's figures are printed, the pass is annotated in the test report, and a pass that needed a
+  retry says "passed on retry N (the first attempt was over the 4 ms budget)"; it is never a plain pass. A first
+  attempt over budget is therefore visible in `npm run test:perf` output (`perf ...: attempt n/3 {...}`), and reading it
+  as a clean pass is an error. All other suites get no retry. Perf figures are compared only on the same machine,
+  cooled down after a long batch (a hot machine reads 0.3 to 0.8 ms high on every repetition).
 - A test that flaked twice is quarantined with `test.fixme('flaky: <issue>')` and an owner; quarantined tests are
   listed in the weekly acceptance report.
 - Waits are on observable state (`window.__engine` counters, `data-testid` text, `waitForFunction`), not fixed sleeps.
@@ -169,6 +226,23 @@ npm run test:browser                            # real WebGPU in vitest (uses PO
 npm run test:harness -- tests/harness           # accuracy / tracking / ball scoring
 VBT_CHROME=/path/to/chrome npm run test:e2e     # alternative Chrome
 ```
+
+Codex-round specs (each runs alone; production build, `npm run build` then `PORT=5184 npm run preview` first; add
+`M4_OUT=<dir>` to keep their evidence outside the default `m4-runs` folder):
+
+```
+PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-offline      # F3, 20 s
+PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-ball-gate    # F2, 25 s
+PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-quality      # F4, 35 s
+PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-resume-ids   # F1, 2 min
+PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-keyboard     # M1 keyboard path, 10 s
+PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-vfr-timeline # F5 on an irregular clip, 15 s
+PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-ui-items     # UI/UX ranks 1, 4, 7, 9, 35 s
+E2E_TARGET=preview E2E_SERVER=cf PORT=8787 npx playwright test m5-offline            # F3 through the Worker (after cf:seed-local); red until M5-4 is fixed
+```
+
+Long batches need the Mac on power with the lid open: on battery, or with the lid closed, it sleeps whatever
+`caffeinate` asserts, and a test that was waiting reports the sleep as a timeout.
 
 Perf numbers (`ms/frame`, overlay p95) are only comparable on the same machine with nothing else running; the report
 records machine, browser build and load. A different machine changes the budget, not the correctness thresholds.
@@ -203,3 +277,22 @@ without a virtual display.
 Defects are filed in the tester progress file as `DEFECT: <owner> — <steps> — <expected/actual>` with the command,
 numbers and, when visual, a path to a Playwright trace or screenshot. A defect stays open until the owner reports a fix
 and the tester's re-run is green.
+
+## 10. Results, with revision and environment
+
+Dated results are history, not guarantees; each row names where it was measured. "Mac" = Apple M-series laptop, macOS 26.
+
+| When | Revision | Environment | Command | Result |
+|---|---|---|---|---|
+| 2026-11-18 | web-app-v1 @ 6b4b901 | Mac on battery (36 % falling to 6 %), Chrome for Testing 149, production build on `vite preview` :5184 | `npm run typecheck`, `npm run lint` | rc 0; lint 36 warnings, 11 infos |
+| same | same | same (Node 22.23.1) | `npm test` | 80 files, 605 tests passed (3.6 s) |
+| same | same | same | `npm run test:browser` | 29 files, 162 tests passed (36 s) |
+| same | same | same | `npm run test:perf` | 2 passed on the first attempt: flushed p95 2.80 ms (12 players) and 3.90 ms (focus layers) at 3840x2160 |
+| same | same | same | `npm run test:harness` | 20 passed, 2 failed: the dump tools `clip-boxes`/`clip-tracks` need `VBT_OUT`/`VBT_RAW_DIR` (bug M5-1) |
+| same | same | same | new specs, each alone: `m5-offline` 2, `m5-ball-gate` 1, `m5-quality` 1, `m5-resume-ids` 1, `m5-keyboard` 1, `m5-ui-items` 4, `resume-cancel` (5) | all passed (m5-vfr-timeline: see the report) |
+| same | same | same, on battery, then on the charger | Chrome e2e on the production build, in three runs | every spec file passed: a stopped full run (79 results, 0 failed: a11y, app-flow, app-sync, cross-*, engine-open, errors, export start), a quick batch (smoke, sync-baseline, m4-keep, m4-reduced-motion, m4-resume, m5-vfr-timeline; `m4-tier-ladder` updated for the fresh worker after "Try a lighter mode" and passing), and `m4-restart m4-cancel-recovery m4-finalize m4-pick-survives m4-visual perf export resume-cancel` 47 passed / 1 skipped / 0 failed (23 min) |
+| same | same | WebKit 27.2 headless | `playwright test -c tests/playwright.webkit-full.config.ts` | 74 passed, 1 skipped, 0 failed (9.4 min) |
+| same | same | Cloudflare Worker (`wrangler dev`, local R2) | `E2E_TARGET=preview E2E_SERVER=cf PORT=8787 npx playwright test smoke export m5-offline` | smoke 2 and export 12 passed; `m5-offline` 2 FAILED (`net::ERR_FAILED` on the offline reload: the Worker redirects `/index.html`, bug M5-4) |
+| 2026-11-18 | same | same, `--disable-gpu` (CPU tier) | `m2-all.sh ... --args=--disable-gpu`, `m2-to-bench.mjs`, `score.ts --frames static` | static recall@.5 0.785, PCK@.05 0.939 (app output); bench page on the CPU tier 0.822 / 0.936 |
+| 2026-11-13..15 | 719fc77 + M4 tests (acceptance-m4.md) | Chrome CfT 149, WebKit 27.2, preview build | full Chrome e2e 117 passed / 9 skipped / 1 (a threshold of mine, fixed); WebKit 74 / 1 / 0; Cloudflare Worker 77 / 5 / 0 | the last complete suite runs |
+

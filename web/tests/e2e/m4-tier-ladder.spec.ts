@@ -37,7 +37,7 @@ test('Try a lighter mode steps down from the tier the engine really ran on; wasm
   const dir = outDir('2g-ladder');
   await installProbe(context);
   const faults = await routeEngineFaults(context, (generation) =>
-    generation === 0 ? { failAtCall: 8 } : generation === 1 ? { failAtCall: 8, failRepeat: true } : {},
+    generation === 0 ? { failAtCall: 8 } : { failAtCall: 8, failRepeat: true },
   );
   await routeInferenceFailure(context, faults);
   const steps: Record<string, unknown>[] = [];
