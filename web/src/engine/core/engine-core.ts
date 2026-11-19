@@ -403,6 +403,8 @@ export class EngineCore {
       });
     }
     const pipeline = await this.pipelineFor(loaded, settings);
+    // The prepared pipeline is reused across clips: clear what the previous clip (or a cancelled run) left in it.
+    await (pipeline as FramePipeline & { reset?: () => Promise<void> }).reset?.();
     const tracker = await this.trackerFor(ml, settings, store, manifest, startUs);
     const { capabilities } = this;
     if (!capabilities) throw fail('internal', 'Capabilities are not available.');

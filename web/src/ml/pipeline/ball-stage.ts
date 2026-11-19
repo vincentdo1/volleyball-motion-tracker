@@ -35,6 +35,17 @@ export class BallStage {
     return !this.givenUp;
   }
 
+  /** Forgets everything about the clip so far (pending frames, the no-ball gate, the first PTS); the session stays. */
+  reset(): void {
+    this.pending = [];
+    this.firstPtsUs = null;
+    this.seenBall = false;
+    this.givenUp = false;
+    this.displayWidth = 0;
+    this.displayHeight = 0;
+    this.busyMs = 0;
+  }
+
   takeMs(): number {
     const ms = this.busyMs;
     this.busyMs = 0;

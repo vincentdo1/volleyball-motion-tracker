@@ -26,8 +26,13 @@ const DEFAULT_BALL_TRAIL_S = 0.5;
 /** A gap longer than this between ball samples ends the trail: it never bridges a lost track. */
 const MAX_TRAIL_GAP_US = 250_000;
 const REF_SCORE = 0.6;
-/** Samples either side of a sample whose bones form its reference lengths. */
-const REF_WINDOW = 15;
+/**
+ * Half-width of the reference window in presentation time: the samples within this many microseconds either side of a
+ * sample form its reference lengths (and its body-height neighbourhood). It is a duration, not a sample count, so the
+ * same motion gets the same reference at 15, 30 or 60 fps and on a variable-rate clip. 0.5 s is what the old window
+ * of 15 samples came to at the 30 fps it was calibrated on.
+ */
+export const REF_WINDOW_US = 500_000;
 const FALLBACK_BALL_RADIUS = 8;
 const JOINTS = PERSON_KP_VALUES / 3;
 
@@ -38,9 +43,37 @@ function median(values: number[]): number {
   return values.length % 2 ? (values[mid] as number) : ((values[mid - 1] as number) + (values[mid] as number)) / 2;
 }
 
+/** First index whose PTS is >= `value` (`sorted.length` when none). */
+function lowerBound(sorted: Float64Array, value: number): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if ((sorted[mid] as number) < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * For every sample the index range `[from, to)` of the samples whose PTS lies within `REF_WINDOW_US` of its own
+ * (bounds included), found by binary search; the sample itself is always inside.
+ */
+export function windowBounds(ptsUs: ArrayLike<number>): { from: Int32Array; to: Int32Array } {
+  const sorted = Float64Array.from(ptsUs);
+  const from = new Int32Array(sorted.length);
+  const to = new Int32Array(sorted.length);
+  for (let s = 0; s < sorted.length; s++) {
+    const pts = sorted[s] as number;
+    from[s] = lowerBound(sorted, pts - REF_WINDOW_US);
+    to[s] = lowerBound(sorted, pts + REF_WINDOW_US + 1);
+  }
+  return { from, to };
+}
+
 /**
  * Per-bone reference length of every sample of a track (`samples x BONE_STYLES.length`, display px): the median over
- * the confident samples within REF_WINDOW samples either side. Players change apparent scale as they move towards or
+ * the confident samples within REF_WINDOW_US of its PTS either side. Players change apparent scale as they move towards or
  * away from the camera, so a clip-wide median would read every bone of a near player as a glitch; a local one follows
  * the scale yet a swap or jump lasting a few frames stays an outlier. 0 = no confident sample nearby.
  */
@@ -49,6 +82,7 @@ export function computeRefBoneLengths(track: TrackColumns): Float32Array {
   const bones = BONE_STYLES.length;
   const out = new Float32Array(samples * bones);
   const lengths = new Float32Array(samples);
+  const { from, to } = windowBounds(track.ptsUs);
   BONE_STYLES.forEach((style, i) => {
     const { a, b } = style.def;
     for (let s = 0; s < samples; s++) {
@@ -64,7 +98,7 @@ export function computeRefBoneLengths(track: TrackColumns): Float32Array {
     }
     for (let s = 0; s < samples; s++) {
       const near: number[] = [];
-      for (let n = Math.max(0, s - REF_WINDOW); n <= Math.min(samples - 1, s + REF_WINDOW); n++) {
+      for (let n = from[s] as number; n < (to[s] as number); n++) {
         if (Number.isFinite(lengths[n] as number)) near.push(lengths[n] as number);
       }
       out[s * bones + i] = median(near);
@@ -155,22 +189,10 @@ export function ballAt(
   };
 }
 
-/** First index whose PTS is >= `value` (`sorted.length` when none). */
-function lowerBound(sorted: Float64Array, value: number): number {
-  let lo = 0;
-  let hi = sorted.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if ((sorted[mid] as number) < value) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
 /**
  * Wrist speeds in body-heights/s over a whole track (both wrists, every measurable sample). The body height is the
  * measure the painter divides the per-frame speeds by (`assessPose(...).apparentHeight`, here the median over the
- * neighbouring samples), so the clip-wide p95 and the coloured speeds share one unit even where a box is cut by the
+ * samples within REF_WINDOW_US), so the clip-wide p95 and the coloured speeds share one unit even where a box is cut by the
  * frame edge.
  */
 function wristSpeedsOf(samples: readonly PoseSample[]): number[] {
@@ -180,9 +202,10 @@ function wristSpeedsOf(samples: readonly PoseSample[]): number[] {
     return a.level === 'marker' ? 0 : a.apparentHeight;
   });
   const speeds: number[] = [];
+  const { from, to } = windowBounds(samples.map((s) => s.ptsUs));
   for (let i = 0; i < players.length; i++) {
     const near: number[] = [];
-    for (let n = Math.max(0, i - REF_WINDOW); n <= Math.min(players.length - 1, i + REF_WINDOW); n++) {
+    for (let n = from[i] as number; n < (to[i] as number); n++) {
       if ((heights[n] as number) > 0) near.push(heights[n] as number);
     }
     const body = median(near);

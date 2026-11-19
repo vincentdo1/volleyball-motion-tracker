@@ -23,8 +23,15 @@ function percentile(values: number[], p: number): number {
   return sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)] as number;
 }
 
+interface Report {
+  recordP50: number;
+  recordP95: number;
+  flushedP50: number;
+  flushedP95: number;
+}
+
 /** Draws the scene at 4K on a real canvas and returns the p95 of the recording and of the flushed frame. */
-function measure(label: string, data: FinalFrameData, options: RenderOptions, frames = 120) {
+function measure(data: FinalFrameData, options: RenderOptions, frames = 120): Report {
   const canvas = document.createElement('canvas');
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
@@ -54,33 +61,52 @@ function measure(label: string, data: FinalFrameData, options: RenderOptions, fr
     flushedP50: percentile(wall, 0.5),
     flushedP95: percentile(wall, 0.95),
   };
-  console.warn(`perf ${label}: ${JSON.stringify(report)}`);
   renderer.dispose();
   return report;
 }
 
-/** The repetition with the lowest flushed p95, stopping at the first one within the budget. */
-function measureBest(...args: Parameters<typeof measure>): ReturnType<typeof measure> {
-  let best = measure(...args);
-  for (let attempt = 1; attempt < ATTEMPTS && best.flushedP95 > P95_BUDGET_MS; attempt++) {
-    const next = measure(...args);
-    if (next.flushedP95 < best.flushedP95) best = next;
+/**
+ * Up to `ATTEMPTS` repetitions, stopping at the first one within the budget; the verdict is the lowest flushed p95.
+ * Every attempt's figures are printed, and a pass that needed a retry says so plainly ("passed on retry N") instead of
+ * reading like a clean first pass.
+ */
+function measureBest(label: string, ...args: Parameters<typeof measure>): { best: Report; verdict: string } {
+  const attempts: Report[] = [];
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    const report = measure(...args);
+    attempts.push(report);
+    console.warn(`perf ${label}: attempt ${attempt}/${ATTEMPTS} ${JSON.stringify(report)}`);
+    if (report.flushedP95 <= P95_BUDGET_MS) break;
   }
-  return best;
+  const best = attempts.reduce((lowest, next) => (next.flushedP95 < lowest.flushedP95 ? next : lowest));
+  const figures = attempts.map((a, i) => `attempt ${i + 1}: ${a.flushedP95.toFixed(2)} ms`).join(', ');
+  const passed = best.flushedP95 <= P95_BUDGET_MS;
+  const verdict = !passed
+    ? `FAILED all ${attempts.length} attempts`
+    : attempts.length === 1
+      ? 'passed on the first attempt'
+      : `passed on retry ${attempts.length - 1} (the first attempt was over the ${P95_BUDGET_MS} ms budget)`;
+  const summary = `${label}: ${verdict}; flushed p95 ${figures}`;
+  console.warn(`perf ${summary}`);
+  return { best, verdict: summary };
 }
 
 describe('renderer performance (4K canvas, 12 players, every layer)', () => {
-  it('draws with p95 <= 4 ms per frame', () => {
+  it('draws with p95 <= 4 ms per frame', async ({ annotate }) => {
     const data = syntheticScene({ width: WIDTH, height: HEIGHT, fps: 60, frameCount: 120, players: 12, seed: 3 });
-    const report = measureBest('3840x2160 x12 players', data, {
+    const { best: report, verdict } = measureBest('3840x2160 x12 players', data, {
       ...DEFAULT_RENDER_OPTIONS,
       focusTrackId: 1,
       bgLuma: 0.4,
     });
-    expect(report.flushedP95).toBeLessThanOrEqual(P95_BUDGET_MS);
+    // an annotation reaches the report of a passing test too: a retry pass is never silent
+    await annotate(verdict);
+    expect(report.flushedP95, verdict).toBeLessThanOrEqual(P95_BUDGET_MS);
   });
 
-  it('draws with the focus layers on (trails, ghosts, angles, speed colours) within the same budget', () => {
+  it('draws with the focus layers on (trails, ghosts, angles, speed colours) within the same budget', async ({
+    annotate,
+  }) => {
     // player 1 runs and swings across the frame so ghosts, trails and the speed colours all have something to draw
     const base = syntheticScene({ width: WIDTH, height: HEIGHT, fps: 60, frameCount: 120, players: 12, seed: 3 });
     const mover = motionScene({
@@ -101,7 +127,9 @@ describe('renderer performance (4K canvas, 12 players, every layer)', () => {
       showAngles: true,
       velocityColor: true,
     };
-    const report = measureBest('3840x2160 x12 players, focus layers', data, options);
-    expect(report.flushedP95).toBeLessThanOrEqual(P95_BUDGET_MS);
+    const { best: report, verdict } = measureBest('3840x2160 x12 players, focus layers', data, options);
+    // an annotation reaches the report of a passing test too: a retry pass is never silent
+    await annotate(verdict);
+    expect(report.flushedP95, verdict).toBeLessThanOrEqual(P95_BUDGET_MS);
   });
 });

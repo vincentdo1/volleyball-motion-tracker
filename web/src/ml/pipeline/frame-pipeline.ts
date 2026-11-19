@@ -86,7 +86,16 @@ function blankInput(runtime: MlRuntime, settings: ProcessingSettings): { input: 
   return { input: { ...base, source: { kind: 'pixels', data, width, height, channels: 4 } }, close: () => {} };
 }
 
-class Pipeline implements FramePipeline {
+/**
+ * A `FramePipeline` that can start another clip: `reset()` clears every stage's per-clip state and keeps the
+ * prepared sessions and GPU buffers. (The frozen contract does not list it yet; the engine calls it when present.)
+ */
+export interface ResettableFramePipeline extends FramePipeline {
+  /** Waits for the calls in flight, then forgets the previous clip: poses, the ball stage's pending frames and gate. */
+  reset(): Promise<void>;
+}
+
+class Pipeline implements ResettableFramePipeline {
   /** Persons of the previous processed frame, the source of propagated boxes. */
   private previous: readonly Pose[] = [];
   private readonly ball: BallStage | null;
@@ -210,6 +219,13 @@ class Pipeline implements FramePipeline {
     };
   }
 
+  reset(): Promise<void> {
+    return this.turns.exclusive(async () => {
+      this.previous = [];
+      this.ball?.reset();
+    });
+  }
+
   flush(): Promise<readonly BallFrameCandidates[]> {
     return this.turns.exclusive(async () => (await this.ball?.flush()) ?? []);
   }
@@ -283,6 +299,9 @@ class Pipeline implements FramePipeline {
   }
 }
 
-export async function createFramePipeline(runtime: MlRuntime, settings: ProcessingSettings): Promise<FramePipeline> {
+export async function createFramePipeline(
+  runtime: MlRuntime,
+  settings: ProcessingSettings,
+): Promise<ResettableFramePipeline> {
   return new Pipeline(runtime, settings, createFrameInputs(runtime));
 }
