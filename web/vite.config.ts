@@ -28,7 +28,7 @@ export const viteConfig: UserConfig = {
       injectRegister: false,
       manifest: false,
       injectManifest: {
-        globPatterns: ['**/*.{js,css,html,svg,png,webmanifest}'],
+        globPatterns: ['**/*.{js,css,html,svg,png,webmanifest,woff2}'],
         globIgnores: ['**/*.wasm', 'models/**'],
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
       },

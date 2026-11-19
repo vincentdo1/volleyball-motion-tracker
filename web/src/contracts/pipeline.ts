@@ -115,6 +115,11 @@ export interface FramePipeline {
   process(input: FrameInput): Promise<RawFrameResult>;
   /** Ball results still buffered at the end of the clip. */
   flush(): Promise<readonly BallFrameCandidates[]>;
+  /**
+   * Forgets the clip so far (previous poses, buffered ball frames, the ball model's gate) and keeps the loaded
+   * sessions: the engine reuses a pipeline across clips and calls this at the start of every run.
+   */
+  reset(): Promise<void>;
   dispose(): Promise<void>;
 }
 

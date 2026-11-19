@@ -179,6 +179,9 @@ function createStubPipeline(
       };
     },
     flush: async () => flushBall(),
+    reset: async () => {
+      pendingBall = [];
+    },
     dispose: async () => undefined,
   };
 }
