@@ -75,7 +75,7 @@ test('F3: first visit -> service worker controls the page -> offline -> reload s
       async () => {
         const state = await cacheState(page);
         // three models, and the runtime's loader and wasm (Chrome's WebGPU flavour loads both)
-      return state.models >= 3 && state.ort >= 2;
+        return state.models >= 3 && state.ort >= 2;
       },
       { timeout: 180_000 },
     )
