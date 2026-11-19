@@ -5,6 +5,7 @@ import type { appMachine } from './machine';
 import { noticeFor, RESTART_NOTICE } from './notices';
 import { ChunkQueue, type FlushScheduler, frameScheduler } from './results/chunk-queue';
 import { EtaSmoother } from './results/eta';
+import { useEngineStatus } from './stores/engine-status';
 import { useSessionStore } from './stores/session';
 
 /**
@@ -40,7 +41,13 @@ export function bridgeEngine(
       else queue.flush();
       session().runStarted(e.fresh, e.resumedFrames);
     }),
-    engine.on('ready', (e) => actor.send({ type: 'ENGINE_READY', tier: e.tier })),
+    engine.on('model-progress', (e) =>
+      useEngineStatus.getState().addModelProgress(e.modelId, e.bytesDone, e.bytesTotal, e.fromCache),
+    ),
+    engine.on('ready', (e) => {
+      useEngineStatus.getState().endPreparing();
+      actor.send({ type: 'ENGINE_READY', tier: e.tier });
+    }),
     engine.on('chunk', (e) => queue.push({ batch: e.batch, seq: e.seq })),
     engine.on('progress', (e) => {
       session().setProgress(e.progress, eta.update(now(), e.progress.framesDone, e.progress.framesTotal));
@@ -63,7 +70,10 @@ export function bridgeEngine(
     engine.on('state', (e) => {
       if (e.state === 'done') actor.send({ type: 'ENGINE_DONE' });
     }),
-    engine.on('error', (e) => actor.send({ type: 'ENGINE_ERROR', error: e.error })),
+    engine.on('error', (e) => {
+      useEngineStatus.getState().endPreparing();
+      actor.send({ type: 'ENGINE_ERROR', error: e.error });
+    }),
   ];
   return () => {
     queue.discard();

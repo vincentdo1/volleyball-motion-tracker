@@ -153,6 +153,22 @@ describe('MockEngine', () => {
     await engine.cancel();
   });
 
+  it('rejects a cancelled export with export-failed and detail.cancelled, like the real engine', async () => {
+    const engine = make({ ...FAST, chunkDelayMs: 1 });
+    await run(engine);
+    const abort = new AbortController();
+    const exporting = engine.exportResult(
+      { kind: 'mp4', overlay: {} as never, includeAudio: false },
+      { signal: abort.signal },
+    );
+    setTimeout(() => abort.abort(), 5);
+    await expect(exporting).rejects.toMatchObject({ code: 'export-failed', detail: { cancelled: true } });
+    const aborted = AbortSignal.abort();
+    await expect(engine.exportResult({ kind: 'json' }, { signal: aborted })).rejects.toMatchObject({
+      detail: { cancelled: true },
+    });
+  });
+
   it('rejects start before a clip is open', async () => {
     const engine = make();
     await engine.init();

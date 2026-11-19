@@ -1,7 +1,9 @@
 import { TriangleAlert } from 'lucide-react';
 import { type EngineError, type EngineErrorCode, ERROR_DEFAULTS } from '@/contracts/errors';
 import { Button } from '@/ui/button';
+import { toast } from '@/ui/toaster';
 import { AppHeader } from '../components/AppHeader';
+import { problemText } from '../problem-text';
 
 export interface ProblemProps {
   readonly error: EngineError;
@@ -38,6 +40,14 @@ export function Problem({
   onNewClip,
 }: ProblemProps) {
   const { title } = ERROR_DEFAULTS[error.code];
+  const text = problemText(error);
+  const copyDetails = () => {
+    const lines = [text.detailsLine, ...(error.message === title ? [] : [error.message])].join('\n');
+    navigator.clipboard.writeText(lines).then(
+      () => toast.success('Details copied'),
+      () => toast.error('Could not copy the details'),
+    );
+  };
   const primary = (() => {
     switch (error.action) {
       case 'retry':
@@ -81,13 +91,25 @@ export function Problem({
         <TriangleAlert aria-hidden className="size-8 text-id-5" />
         <div role="alert" className="flex flex-col gap-5">
           <h1 className="font-semibold text-[28px] leading-tight tracking-tight">{title}</h1>
-          {error.message !== title && !TECHNICAL.includes(error.code) && <p className="text-text-2">{error.message}</p>}
+          {text.explanation ? (
+            <p className="text-text-2" data-testid="problem-explanation">
+              {text.explanation}
+            </p>
+          ) : (
+            error.message !== title && !TECHNICAL.includes(error.code) && <p className="text-text-2">{error.message}</p>
+          )}
         </div>
-        {(error.action === 'change-browser' || (error.action === 'fallback-tier' && !canFallbackTier)) && (
-          <p className="text-text-2" data-testid="browser-hint">
-            {BROWSER_HINT}
+        {text.nextStep && (
+          <p className="text-text-2" data-testid="next-step">
+            {text.nextStep}
           </p>
         )}
+        {!text.nextStep &&
+          (error.action === 'change-browser' || (error.action === 'fallback-tier' && !canFallbackTier)) && (
+            <p className="text-text-2" data-testid="browser-hint">
+              {BROWSER_HINT}
+            </p>
+          )}
         <div className="flex flex-wrap gap-2">
           {primary}
           {!terminal && error.action !== 'choose-another-file' && (
@@ -98,8 +120,13 @@ export function Problem({
         </div>
         <details className="text-[13px] text-text-2">
           <summary className="cursor-pointer">Details</summary>
-          <p className="mt-2 font-mono">{error.code}</p>
+          <p className="mt-2 break-words font-mono select-all" data-testid="details-line">
+            {text.detailsLine}
+          </p>
           {TECHNICAL.includes(error.code) && <p className="mt-1 break-words font-mono">{error.message}</p>}
+          <Button variant="secondary" size="sm" className="mt-2" onClick={copyDetails}>
+            Copy details
+          </Button>
         </details>
       </main>
     </div>

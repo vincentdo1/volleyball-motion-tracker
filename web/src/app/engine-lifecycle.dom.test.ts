@@ -92,6 +92,89 @@ describe('ensureReady', () => {
   });
 });
 
+describe('ensureReady with changed options (F4)', () => {
+  /** Settles every init at once; `state` follows like a worker that reported `ready`. */
+  function settlingEngine() {
+    const engine = {
+      state: 'idle' as EngineState,
+      init: vi.fn(async () => {
+        engine.state = 'ready';
+        return READY;
+      }),
+    };
+    return { engine, api: engine as unknown as EngineApi };
+  }
+
+  it('initialises again when the quality opt-in changes, in both directions, and not when it stays', async () => {
+    const { engine, api } = settlingEngine();
+    await ensureReady(api, { qualityOptIn: false });
+    await flush();
+    await ensureReady(api, { qualityOptIn: true });
+    await flush();
+    expect(engine.init).toHaveBeenCalledTimes(2);
+    expect(engine.init).toHaveBeenLastCalledWith({ qualityOptIn: true });
+    await ensureReady(api, { qualityOptIn: true });
+    expect(engine.init).toHaveBeenCalledTimes(2);
+    await ensureReady(api, { qualityOptIn: false });
+    expect(engine.init).toHaveBeenCalledTimes(3);
+    expect(engine.init).toHaveBeenLastCalledWith({ qualityOptIn: false });
+  });
+
+  it('compares the options by value: a fresh object with the same content, or an undefined key, is no change', async () => {
+    const { engine, api } = settlingEngine();
+    await ensureReady(api, { qualityOptIn: true });
+    await flush();
+    await ensureReady(api, { qualityOptIn: true, tierOverride: undefined });
+    expect(engine.init).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the models alone while a run is going and applies the change once it has ended', async () => {
+    const { engine, api } = settlingEngine();
+    await ensureReady(api, { qualityOptIn: false });
+    await flush();
+    for (const state of ['processing', 'paused', 'finalizing'] as const) {
+      engine.state = state;
+      await ensureReady(api, { qualityOptIn: true });
+    }
+    expect(engine.init).toHaveBeenCalledTimes(1);
+    engine.state = 'done';
+    await ensureReady(api, { qualityOptIn: true });
+    expect(engine.init).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for an attempt in flight, then starts the one with the new options; the same call twice shares it', async () => {
+    const fake = fakeEngine();
+    const first = ensureReady(fake.api, { qualityOptIn: false });
+    const second = ensureReady(fake.api, { qualityOptIn: true });
+    const third = ensureReady(fake.api, { qualityOptIn: true });
+    expect(third).toBe(second);
+    expect(fake.engine.init).toHaveBeenCalledTimes(1);
+    fake.engine.state = 'ready';
+    fake.resolve();
+    await first;
+    await flush();
+    expect(fake.engine.init).toHaveBeenCalledTimes(2);
+    expect(fake.engine.init).toHaveBeenLastCalledWith({ qualityOptIn: true });
+    fake.resolve();
+    await second;
+  });
+
+  it('runs onInit before each real init, including the re-initialisation', async () => {
+    const { engine, api } = settlingEngine();
+    const order: string[] = [];
+    engine.init.mockImplementation(async () => {
+      order.push('init');
+      engine.state = 'ready';
+      return READY;
+    });
+    const onInit = () => order.push('onInit');
+    await ensureReady(api, { qualityOptIn: false }, onInit);
+    await flush();
+    await ensureReady(api, { qualityOptIn: true }, onInit);
+    expect(order).toEqual(['onInit', 'init', 'onInit', 'init']);
+  });
+});
+
 /** An engine whose state never changes by itself: `stopRun` must not depend on it. */
 function runEngine(state: EngineState, cancel: () => Promise<void> = async () => undefined) {
   const engine = {

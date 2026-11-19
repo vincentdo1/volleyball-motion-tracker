@@ -15,8 +15,8 @@ interface SettingsState {
   readonly dismissedHints: readonly HintId[];
   setQualityMode(on: boolean): void;
   dismissHint(id: HintId): void;
-  /** Forgets every local preference and hint. */
-  clearLocalData(): void;
+  /** Puts the quality mode and the dismissed tips back to their defaults and forgets the stored appearance. */
+  resetPreferences(): void;
 }
 
 function stored(): Pick<SettingsState, 'qualityMode' | 'dismissedHints'> {
@@ -40,7 +40,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     writeJson(HINTS_KEY, dismissedHints);
     set({ dismissedHints });
   },
-  clearLocalData() {
+  resetPreferences() {
     for (const key of [KEY, HINTS_KEY, APPEARANCE_KEY]) removeKey(key);
     set({ qualityMode: false, dismissedHints: [] });
   },

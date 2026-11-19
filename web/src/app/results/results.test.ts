@@ -163,4 +163,26 @@ describe('session chunks and progress (M2-18)', () => {
     session().addChunk(batchOf(0, 8), 0);
     expect(session().processedFrames).toBe(16);
   });
+
+  it('ignores a late chunk after the final result without error, and a later run builds a new stream (F8)', () => {
+    begin();
+    session().addChunk(batchOf(0, 8), 0);
+    session().setFinal({
+      header: {} as never,
+      frames: scene.frames,
+      tracks: scene.tracks,
+      ball: scene.ball,
+    });
+    const after = session();
+    expect(() => session().addChunk(batchOf(8, 16), 1)).not.toThrow();
+    expect(() => session().addChunks([{ batch: batchOf(0, 8), seq: 0 }])).not.toThrow();
+    expect(session().revision).toBe(after.revision);
+    expect(session().source).toBe(after.source);
+    expect(session().processedFrames).toBe(after.processedFrames);
+    // the seqs of the finished run are gone: a new stream starts empty and takes seq 0 again
+    session().runStarted(true, 0);
+    session().addChunk(batchOf(0, 8), 0);
+    expect(session().final).toBeNull();
+    expect(session().processedFrames).toBe(8);
+  });
 });

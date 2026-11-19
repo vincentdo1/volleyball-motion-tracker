@@ -1,10 +1,10 @@
-import type { EngineApi } from '@/contracts/protocol';
-import { createEngine } from '@/engine/client';
+import { createEngine, type EngineHandle } from '@/engine/client';
 import { parseMockParam } from './mock/config';
 import { MockEngine } from './mock/engine';
 
 export interface AppEngine {
-  readonly engine: EngineApi;
+  /** `EngineHandle`: the engine API plus the cancellation of exports (the mock has it too). */
+  readonly engine: EngineHandle;
   /** True when the app runs on the mock engine (`?mock=...`). */
   readonly mock: boolean;
 }

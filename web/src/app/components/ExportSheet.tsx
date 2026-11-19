@@ -1,8 +1,9 @@
 import { Braces, Film, Image, Loader, type LucideIcon, Table2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ERROR_DEFAULTS, isEngineError } from '@/contracts/errors';
-import type { EngineApi, ExportRequest } from '@/contracts/protocol';
+import type { ExportRequest } from '@/contracts/protocol';
 import type { RenderOptions } from '@/contracts/renderer';
+import type { EngineHandle } from '@/engine/client';
 import { Button } from '@/ui/button';
 import { Progress } from '@/ui/progress';
 import { Sheet } from '@/ui/sheet';
@@ -52,7 +53,7 @@ const FORMATS: readonly Format[] = [
 ];
 
 export interface ExportSheetProps {
-  readonly engine: EngineApi;
+  readonly engine: EngineHandle;
   readonly controller: PlayerController | null;
   readonly options: RenderOptions;
 }
@@ -60,6 +61,11 @@ export interface ExportSheetProps {
 /** `clip.posetrack.json` -> `clip.partial.posetrack.json`: the engine names the files, the app marks them as incomplete. */
 export function partialFileName(fileName: string): string {
   return fileName.replace(/(\.(?:posetrack|overlay)\.[a-z0-9]+)$/i, '.partial$1');
+}
+
+/** The engine's answer to an aborted export: `export-failed` with `detail.cancelled`. Not a failure to report. */
+export function isCancelledExport(error: unknown): boolean {
+  return isEngineError(error) && error.code === 'export-failed' && error.detail?.cancelled === true;
 }
 
 function failureMessage(error: unknown): string {
@@ -87,6 +93,12 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
   const [error, setError] = useState<{ kind: Kind; message: string } | null>(null);
   const [includeAudio, setIncludeAudio] = useState(true);
   const [pngOverlay, setPngOverlay] = useState(true);
+  const [cancelling, setCancelling] = useState(false);
+  /** Aborts the export that is running (the engine stops it and rejects with `detail.cancelled`). */
+  const abortRef = useRef<AbortController | null>(null);
+
+  // leaving the results (or the page) with an export running stops it
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   useEffect(
     () =>
@@ -101,6 +113,9 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
     setBusy(kind);
     setPercent(0);
     setError(null);
+    setCancelling(false);
+    const abort = new AbortController();
+    abortRef.current = abort;
     try {
       if (kind === 'png') {
         if (!controller) return;
@@ -118,14 +133,22 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
         saveBlob(blob, `${fileStem(clip.name)}-f${frameIndex + 1}.png`);
       } else {
         const request: ExportRequest = kind === 'mp4' ? { kind, overlay: options, includeAudio } : { kind };
-        const result = await engine.exportResult(request);
+        const result = await engine.exportResult(request, { signal: abort.signal });
         saveBlob(result.blob, partial ? partialFileName(result.fileName) : result.fileName);
       }
     } catch (e) {
-      setError({ kind, message: failureMessage(e) });
+      // a cancel the user asked for is not an error
+      if (!isCancelledExport(e)) setError({ kind, message: failureMessage(e) });
     } finally {
+      if (abortRef.current === abort) abortRef.current = null;
+      setCancelling(false);
       setBusy(null);
     }
+  };
+
+  const cancel = () => {
+    setCancelling(true);
+    abortRef.current?.abort();
   };
 
   return (
@@ -185,7 +208,20 @@ export function ExportSheet({ engine, controller, options }: ExportSheetProps) {
                   </Toggle>
                 </div>
               )}
-              {busy === kind && kind === 'mp4' && <Progress value={percent} label="Export progress" className="mt-3" />}
+              {busy === kind && kind === 'mp4' && (
+                <div className="mt-3 flex items-center gap-3">
+                  <Progress value={percent} label="Export progress" className="min-w-0 flex-1" />
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={cancel}
+                    disabled={cancelling}
+                    data-testid="export-cancel"
+                  >
+                    {cancelling ? 'Cancelling' : 'Cancel'}
+                  </Button>
+                </div>
+              )}
               {error?.kind === kind && (
                 <p role="alert" className="mt-3 text-[13px] text-danger">
                   {error.message}

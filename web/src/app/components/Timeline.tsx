@@ -1,15 +1,25 @@
 import { Eye, EyeOff } from 'lucide-react';
-import { type KeyboardEvent, type PointerEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type KeyboardEvent, type PointerEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { slotCss } from '@/render/palette';
 import { cn } from '@/ui/cn';
 import { formatClock } from '../format';
 import type { PlayerController } from '../player/controller';
 import { usePlayerSnapshot } from '../player/hooks';
 import { BallLane, type LaneData, LaneLevel } from '../results/lanes';
+import {
+  columnRanges,
+  fractionOfTime,
+  frameAtFraction,
+  pendingFromColumn,
+  timelineAxis,
+} from '../results/timeline-geometry';
 import { isPositionOnly, type TrackInfo } from '../results/tracks';
 import { IdentityDot } from './IdentityDot';
 
+/** Lane row height: a mouse needs 28 px; under a coarse pointer every row is a 44 px touch target (buttons and all). */
 const LANE_H = 28;
+const LANE_H_COARSE = 44;
+const COARSE = '(pointer: coarse)';
 const RULER_H = 22;
 const LEVEL_ALPHA: Readonly<Record<number, number>> = {
   [LaneLevel.Marker]: 0.28,
@@ -33,6 +43,20 @@ export interface TimelineProps {
   readonly onToggleHidden: (trackId: number) => void;
 }
 
+/** True while the primary pointer is coarse (a finger): rows grow so neighbouring hit targets never overlap. */
+function useCoarsePointer(): boolean {
+  const [coarse, setCoarse] = useState(() => typeof matchMedia === 'function' && matchMedia(COARSE).matches);
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const query = matchMedia(COARSE);
+    const update = () => setCoarse(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return coarse;
+}
+
 function cssVar(name: string, fallback: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
@@ -50,7 +74,9 @@ export function Timeline(props: TimelineProps) {
   const [width, setWidth] = useState(0);
   const snap = usePlayerSnapshot(controller);
   const frames = ptsUs.length;
-  const height = RULER_H + (tracks.length + 1) * LANE_H;
+  const laneH = useCoarsePointer() ? LANE_H_COARSE : LANE_H;
+  const height = RULER_H + (tracks.length + 1) * laneH;
+  const axis = useMemo(() => timelineAxis(ptsUs, durationS), [ptsUs, durationS]);
 
   useLayoutEffect(() => {
     const el = trackRef.current;
@@ -78,9 +104,10 @@ export function Timeline(props: TimelineProps) {
     ctx.fillStyle = muted;
     ctx.font = '11px "Geist Mono Variable", ui-monospace, monospace';
     ctx.textBaseline = 'middle';
-    const pxPerSecond = width / Math.max(durationS, 1e-6);
+    const spanS = axis.spanUs / 1e6;
+    const pxPerSecond = width / spanS;
     const every = Math.max(1, Math.ceil(56 / pxPerSecond));
-    for (let s = 0; s <= durationS; s += every) {
+    for (let s = 0; s <= spanS; s += every) {
       const x = Math.round(s * pxPerSecond) + 0.5;
       ctx.fillStyle = border;
       ctx.fillRect(x, RULER_H - 6, 1, 6);
@@ -88,30 +115,31 @@ export function Timeline(props: TimelineProps) {
       ctx.fillText(`${s}s`, x + 4, RULER_H / 2 - 1);
     }
 
-    const columnFrame = (x: number) => Math.min(frames, Math.floor((x / width) * frames));
-    const pendingFromX = Math.floor((processedFrames / frames) * width);
+    // lanes are laid out in time like the ruler: each column stands for the frames inside its time interval
+    const columns = columnRanges(ptsUs, axis, width);
+    const pendingFromX = pendingFromColumn(ptsUs, axis, processedFrames, width);
     const paintLane = (row: number, lane: Uint8Array | undefined, color: string, ball = false) => {
-      const y = RULER_H + row * LANE_H;
+      const y = RULER_H + row * laneH;
       ctx.fillStyle = border;
-      ctx.fillRect(0, y + LANE_H - 1, width, 1);
+      ctx.fillRect(0, y + laneH - 1, width, 1);
       if (pendingFromX < width) {
         ctx.fillStyle = border;
-        for (let x = Math.max(0, pendingFromX); x < width; x += 6) ctx.fillRect(x, y + LANE_H / 2 - 0.5, 3, 1);
+        for (let x = Math.max(0, pendingFromX); x < width; x += 6) ctx.fillRect(x, y + laneH / 2 - 0.5, 3, 1);
       }
       if (!lane) return;
       ctx.fillStyle = color;
       for (let x = 0; x < width; x++) {
-        const from = columnFrame(x);
-        const to = Math.max(from + 1, columnFrame(x + 1));
+        const from = columns.from[x] as number;
+        const to = columns.to[x] as number;
         let level = 0;
         for (let i = from; i < to && i < frames; i++) level = Math.max(level, lane[i] as number);
         if (level === 0) continue;
         if (ball) {
           ctx.globalAlpha = level === BallLane.Visible ? 1 : 0.4;
-          ctx.fillRect(x, y + LANE_H / 2 - 2, 1, 4);
+          ctx.fillRect(x, y + laneH / 2 - 2, 1, 4);
         } else {
           ctx.globalAlpha = LEVEL_ALPHA[level] ?? 0.3;
-          ctx.fillRect(x, y + 6, 1, LANE_H - 13);
+          ctx.fillRect(x, y + Math.round((laneH - 15) / 2), 1, 15);
         }
       }
       ctx.globalAlpha = 1;
@@ -120,13 +148,14 @@ export function Timeline(props: TimelineProps) {
       paintLane(row, lanes?.players.get(t.id), slotCss(t.colorSlot));
     });
     paintLane(tracks.length, lanes?.ball, '#8f7bff', true);
-  }, [width, height, frames, durationS, lanes, revision, tracks, processedFrames]);
+  }, [width, height, laneH, frames, ptsUs, axis, lanes, revision, tracks, processedFrames]);
 
   const seekFromPointer = (e: PointerEvent<HTMLDivElement>) => {
     const rect = trackRef.current?.getBoundingClientRect();
     if (!rect || !controller || rect.width === 0) return;
     const fraction = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    controller.scrubToTime(fraction * durationS);
+    // the frame on screen at that time, which is the one whose lane bar is under the pointer
+    controller.seekToIndex(frameAtFraction(ptsUs, axis, fraction));
   };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!controller) return;
@@ -162,7 +191,7 @@ export function Timeline(props: TimelineProps) {
         {tracks.map((t) => {
           const hidden = hiddenTrackIds.includes(t.id);
           return (
-            <div key={t.id} className="flex items-center" style={{ height: LANE_H }}>
+            <div key={t.id} className="flex items-center" style={{ height: laneH }}>
               <button
                 type="button"
                 onClick={() => props.onFocus(t.id)}
@@ -190,7 +219,7 @@ export function Timeline(props: TimelineProps) {
             </div>
           );
         })}
-        <div className="flex items-center px-2 text-[13px] font-[550] text-text-2" style={{ height: LANE_H }}>
+        <div className="flex items-center px-2 text-[13px] font-[550] text-text-2" style={{ height: laneH }}>
           Ball
         </div>
       </div>
@@ -216,7 +245,7 @@ export function Timeline(props: TimelineProps) {
           <div
             aria-hidden
             className="pointer-events-none absolute top-0 bottom-0 w-px bg-text"
-            style={{ left: `${((snap.frameIndex + 0.5) / frames) * 100}%` }}
+            style={{ left: `${fractionOfTime(axis, ptsUs[snap.frameIndex] ?? axis.startUs) * 100}%` }}
           >
             <span className="absolute -top-0.5 -left-[3px] size-[7px] rotate-45 bg-text" />
           </div>

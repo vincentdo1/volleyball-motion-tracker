@@ -197,6 +197,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // the cue describes the result shown, which after an automatic restart can hold less than was streamed
       processedFrames: partial ? (framesCovered(result) ?? s.processedFrames) : result.frames.ptsUs.length,
     }));
+    // the raw streamed representation (per-frame players, packed batches) was only needed for the remap above; a
+    // run that starts again (`run-started`) builds a new one
+    stream = null;
+    appliedSeqs.clear();
   },
   addWarning(warning) {
     // a note about the engine itself (slow mode) holds for this clip and every later one, until the app initialises

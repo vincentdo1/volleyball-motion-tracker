@@ -10,6 +10,8 @@ interface Lifecycle {
   ready: Promise<ReadyInfo> | null;
   /** True once `ready` resolved; until then the attempt is still in flight whatever `engine.state` says. */
   readySettled: boolean;
+  /** The options of the latest init attempt (the one in `ready`): a later call with other options re-initialises. */
+  readyOptions: InitOptions | null;
   started: Promise<void> | null;
   /** A run was started and has not been stopped since: it may still be going, or be coming back after a recovery. */
   running: boolean;
@@ -21,10 +23,20 @@ const lifecycles = new WeakMap<EngineApi, Lifecycle>();
 /** States in which the loaded models can take a clip. */
 const USABLE: readonly EngineState[] = ['ready', 'opening', 'opened', 'processing', 'paused', 'finalizing', 'done'];
 
+/** States in which the engine accepts a new `init` that replaces the loaded models (not while a run is going). */
+const REINIT_OK: readonly EngineState[] = ['ready', 'opened', 'done'];
+
+const OPTION_KEYS = ['tierOverride', 'qualityOptIn', 'modelBaseUrl', 'ortBaseUrl', 'debug'] as const;
+
+/** Compares by value; an absent option and an undefined one are the same. */
+function sameOptions(a: InitOptions | null, b: InitOptions): boolean {
+  return a !== null && OPTION_KEYS.every((key) => a[key] === b[key]);
+}
+
 function lifecycleOf(engine: EngineApi): Lifecycle {
   let lifecycle = lifecycles.get(engine);
   if (!lifecycle) {
-    lifecycle = { ready: null, readySettled: false, started: null, running: false, stopping: null };
+    lifecycle = { ready: null, readySettled: false, readyOptions: null, started: null, running: false, stopping: null };
     lifecycles.set(engine, lifecycle);
   }
   return lifecycle;
@@ -35,18 +47,31 @@ function lifecycleOf(engine: EngineApi): Lifecycle {
  * `state` only changes when the worker posts its state event, so right after `init` it still reads `idle` and cannot
  * tell a pending attempt from a lost one. A failed attempt is forgotten so retrying works; an engine that lost its
  * worker (state `failed` or `idle` after the attempt resolved) is initialised again. `onInit` runs just before the
- * engine is really asked to initialise (not when an earlier attempt is reused).
+ * engine is really asked to initialise (not when an earlier attempt is reused). A call with other options than the
+ * settled attempt had (compared by value) initialises the engine again when no run is going, so a setting such as the
+ * quality opt-in applies to the next clip in both directions.
  */
 export function ensureReady(engine: EngineApi, options: InitOptions, onInit?: () => void): Promise<ReadyInfo> {
   const lifecycle = lifecycleOf(engine);
   const { state } = engine;
-  if (lifecycle.ready && (!lifecycle.readySettled || state === 'initializing' || USABLE.includes(state))) {
-    return lifecycle.ready;
+  if (lifecycle.ready) {
+    const same = sameOptions(lifecycle.readyOptions, options);
+    const usable = !lifecycle.readySettled || state === 'initializing' || USABLE.includes(state);
+    // Other options than the models were loaded with (the quality opt-in changed since): load them again, but only
+    // between clips; during a run the models stay and the next clip picks the change up.
+    const reinit = !same && (!lifecycle.readySettled || REINIT_OK.includes(state));
+    if (usable && !reinit) return lifecycle.ready;
   }
-  onInit?.();
-  const attempt = engine.init(options);
+  const previous = lifecycle.ready && !lifecycle.readySettled ? lifecycle.ready : null;
+  const begin = (): Promise<ReadyInfo> => {
+    onInit?.();
+    return engine.init(options);
+  };
+  // an attempt still in flight cannot be replaced: the new one starts when it has settled
+  const attempt = previous ? previous.then(begin, begin) : begin();
   lifecycle.ready = attempt;
   lifecycle.readySettled = false;
+  lifecycle.readyOptions = options;
   attempt.then(
     () => {
       if (lifecycle.ready === attempt) lifecycle.readySettled = true;

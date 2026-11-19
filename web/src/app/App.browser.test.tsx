@@ -37,6 +37,23 @@ afterEach(() => {
   window.history.replaceState(null, '', '/');
 });
 
+describe('first visit: preparing the analysis (UI/UX 1)', () => {
+  it('shows Preparing analysis with the download progress from the choice of a file until the analysis starts', async () => {
+    start('?mock=1,download');
+    await chooseClip();
+    // at once, in the landing screen: never an idle drop zone after the choice
+    const status = await screen.findByTestId('preparing');
+    expect(status.textContent).toMatch(/Preparing analysis/);
+    expect(screen.queryByText('Drop a volleyball clip here')).toBeNull();
+    const progress = await screen.findByTestId('preparing-progress', undefined, SLOW);
+    expect(progress.textContent).toMatch(/^\d+% \(/);
+    expect(screen.getByRole('progressbar', { name: 'Download progress' })).toBeTruthy();
+    expect(status.textContent).not.toMatch(/dfine|rtmpose|vballnet|D-FINE|RTMPose/i);
+    await screen.findByRole('slider', { name: 'Timeline' }, SLOW);
+    expect(screen.queryByTestId('preparing')).toBeNull();
+  });
+});
+
 describe('app flow on the mock engine', () => {
   it('goes from the landing page to results, and focus, frame-step and export work', async () => {
     start('?mock=1,fast');

@@ -87,3 +87,11 @@ export function manualScheduler(): { schedule: FlushScheduler; run: () => void; 
     },
   };
 }
+
+/** 100 frames in the first second, then 10 in the next nine: a clip with an irregular frame table. */
+export function irregularPts(): Float64Array {
+  const pts: number[] = [];
+  for (let i = 0; i < 100; i++) pts.push(i * 10_000);
+  for (let i = 0; i < 10; i++) pts.push(1_000_000 + i * 900_000);
+  return Float64Array.from(pts);
+}

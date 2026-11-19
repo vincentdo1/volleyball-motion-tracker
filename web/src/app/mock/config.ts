@@ -10,9 +10,17 @@ export interface MockConfig {
   readonly crowd: boolean;
   /** Delay between processing chunks, ms. `fast` is for tests. */
   readonly chunkDelayMs: number;
+  /** The first start-up downloads the models: `model-progress` events and a longer initialisation (`?mock=download`). */
+  readonly download: boolean;
 }
 
-export const DEFAULT_MOCK_CONFIG: MockConfig = { errorCode: null, empty: false, crowd: false, chunkDelayMs: 90 };
+export const DEFAULT_MOCK_CONFIG: MockConfig = {
+  errorCode: null,
+  empty: false,
+  crowd: false,
+  chunkDelayMs: 90,
+  download: false,
+};
 const FAST_CHUNK_DELAY_MS = 2;
 
 function isErrorCode(value: string): value is EngineErrorCode {
@@ -28,6 +36,7 @@ export function parseMockParam(search: string): MockConfig | null {
     if (part === 'fast') config = { ...config, chunkDelayMs: FAST_CHUNK_DELAY_MS };
     else if (part === 'empty') config = { ...config, empty: true };
     else if (part === 'crowd') config = { ...config, crowd: true };
+    else if (part === 'download') config = { ...config, download: true };
     else if (part.startsWith('error:')) {
       const code = part.slice('error:'.length);
       if (isErrorCode(code)) config = { ...config, errorCode: code };

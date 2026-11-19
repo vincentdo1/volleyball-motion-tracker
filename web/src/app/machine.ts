@@ -3,6 +3,7 @@ import { type DeviceTierId, TIER_STEP_DOWN } from '@/contracts/capabilities';
 import { type EngineError, engineError, isEngineError } from '@/contracts/errors';
 import type { EngineApi, InitOptions, OpenedInfo, ResumeInfo } from '@/contracts/protocol';
 import { ensureReady, keepRun, openClip, startRun, stopRun } from './engine-lifecycle';
+import { useEngineStatus } from './stores/engine-status';
 import { useSessionStore } from './stores/session';
 import { useViewStore } from './stores/view';
 
@@ -80,9 +81,13 @@ async function keepPartialResult(engine: EngineApi): Promise<void> {
   }
 }
 
-/** The app starts a new init attempt: the engine's earlier notes (slow mode, ...) no longer apply to what follows. */
+/**
+ * The app starts a new init attempt: the engine's earlier notes (slow mode, ...) no longer apply to what follows, and
+ * the screens show the preparation (model download, warm-up) until the engine answers.
+ */
 function forgetEngineNotes(): void {
   useSessionStore.getState().resetEngineWarnings();
+  useEngineStatus.getState().beginPreparing();
 }
 
 /** What the engine is initialised with, including a tier the user stepped down to. */

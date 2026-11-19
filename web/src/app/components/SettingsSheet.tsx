@@ -31,13 +31,13 @@ function Field({ title, hint, children }: { title: string; hint?: string; childr
   );
 }
 
-/** Theme, motion, the opt-in quality mode and local data (05 §4.8). */
+/** Theme, motion, the opt-in quality mode and resetting the preferences (05 §4.8). */
 export function SettingsSheet() {
   const open = useUiStore((s) => s.open === 'settings');
   const close = useUiStore((s) => s.close);
   const wide = useMediaQuery('(min-width: 640px)');
   const { theme, motion, setTheme, setMotion } = useThemeStore();
-  const { qualityMode, setQualityMode, clearLocalData } = useSettingsStore();
+  const { qualityMode, setQualityMode, resetPreferences } = useSettingsStore();
   return (
     <Sheet open={open} onOpenChange={(o) => !o && close()} title="Settings" side={wide ? 'right' : 'bottom'}>
       <div className="mt-2 flex flex-col gap-6">
@@ -57,20 +57,23 @@ export function SettingsSheet() {
             </Toggle>
           </div>
         </Field>
-        <Field title="Local data" hint="Saved on this device only: settings and the tips you have dismissed.">
+        <Field
+          title="Preferences"
+          hint="Puts the theme, motion, quality mode and the tips you have dismissed back to their defaults. Saved analyses and downloaded models are not touched."
+        >
           <div>
             <Button
               variant="secondary"
               size="sm"
               onClick={() => {
-                clearLocalData();
+                resetPreferences();
                 setTheme('system');
                 setMotion('system');
-                toast.success('Local data cleared');
+                toast.success('Preferences reset');
               }}
             >
               <Trash2 aria-hidden className="size-4" />
-              Clear local data
+              Reset preferences
             </Button>
           </div>
         </Field>

@@ -1,4 +1,4 @@
-import { type CapabilityReport, DEVICE_TIERS } from '@/contracts/capabilities';
+import { type CapabilityReport, DEVICE_TIERS, type DeviceTier } from '@/contracts/capabilities';
 import { type EngineError, ERROR_DEFAULTS, engineError } from '@/contracts/errors';
 import { HALPE26_KEYPOINTS, PERSON_KP_VALUES } from '@/contracts/halpe26';
 import { findModel, parseModelsLock } from '@/contracts/models';
@@ -27,6 +27,7 @@ import type {
   ReadyInfo,
   StartOptions,
 } from '@/contracts/protocol';
+import type { EngineHandle } from '@/engine/client';
 import { type SyntheticScene, syntheticScene } from '@/render/synthetic';
 import lockJson from '../../../models.lock.json';
 import { fileStem } from '../format';
@@ -37,7 +38,6 @@ import { placeholderMp4, resultToCsv } from './export';
 const FRAMES_PER_CHUNK = 8;
 const MOCK_PLAYERS = 5;
 const MOCK_CROWD = 60;
-const TIER = DEVICE_TIERS['webgpu-default'];
 const lock = parseModelsLock(lockJson);
 
 type Listener = (event: never) => void;
@@ -88,13 +88,19 @@ export function mockCapabilities(): CapabilityReport {
     storage: { opfs: true, persisted: false, quotaBytes: 2 ** 33 },
     offscreenCanvas: true,
     requestVideoFrameCallback: true,
-    recommendedTier: TIER.id,
+    recommendedTier: 'webgpu-default',
     ortFlavor: 'webgpu',
     reasons: ['mock engine'],
   };
 }
 
-function modelInfo(id: string): ModelInfo {
+/** The tier the options select: a forced tier, else the quality opt-in, else the standard one. */
+function tierFor(options: InitOptions): DeviceTier {
+  if (options.tierOverride) return DEVICE_TIERS[options.tierOverride];
+  return DEVICE_TIERS[options.qualityOptIn ? 'webgpu-quality' : 'webgpu-default'];
+}
+
+function modelInfo(tier: DeviceTier, id: string): ModelInfo {
   const m = findModel(lock, id);
   return {
     id: m.id,
@@ -103,8 +109,8 @@ function modelInfo(id: string): ModelInfo {
     version: m.version,
     precision: m.precision,
     sha256: m.sha256,
-    backend: TIER.backend,
-    inputSize: [TIER.detectorInputSize, TIER.detectorInputSize],
+    backend: tier.backend,
+    inputSize: [tier.detectorInputSize, tier.detectorInputSize],
     license: m.license,
   };
 }
@@ -127,11 +133,13 @@ function sampleAt(ptsUs: Float64Array, pts: number, from: number): number {
  * table, then streams a synthetic scene (5 players, a ball, partial tracks, a box-only player, inferred joints)
  * in chunks with progress, the way the real engine does. Errors are injected through `MockConfig.errorCode`.
  */
-export class MockEngine implements EngineApi {
+export class MockEngine implements EngineApi, EngineHandle {
   private readonly config: MockConfig;
   private readonly deps: MockEngineDeps;
   private readonly listeners = new Map<EngineEventType, Set<Listener>>();
   private current: EngineState = 'idle';
+  /** The tier of the latest initialisation; the standard one until the engine is initialised. */
+  private tier: DeviceTier = DEVICE_TIERS['webgpu-default'];
   private clip: ClipInfo | null = null;
   private scene: SyntheticScene | null = null;
   private final: FinalResult | null = null;
@@ -170,7 +178,10 @@ export class MockEngine implements EngineApi {
   private failAt(stage: ReturnType<typeof failureStage>): EngineError | null {
     const code = this.config.errorCode;
     if (!code || failureStage(code) !== stage) return null;
-    return engineError(code, ERROR_DEFAULTS[code].title, { mock: true });
+    // the real engine names the codec it could not decode; the mock names an HEVC one so the screen can be seen
+    const detail: Record<string, string | boolean> =
+      code === 'unsupported-codec' ? { mock: true, codec: 'hvc1.1.6.L93.B0' } : { mock: true };
+    return engineError(code, ERROR_DEFAULTS[code].title, detail);
   }
 
   private async fail(error: EngineError): Promise<never> {
@@ -190,23 +201,47 @@ export class MockEngine implements EngineApi {
     }
   }
 
-  async init(_options: InitOptions = {}): Promise<ReadyInfo> {
-    this.requireState('Initialising', 'idle', 'failed');
+  async init(options: InitOptions = {}): Promise<ReadyInfo> {
+    // like the real engine, an initialised engine initialises again with the new options (not during a run)
+    this.requireState('Initialising', 'idle', 'failed', 'ready', 'opening', 'opened', 'done');
+    const tier = tierFor(options);
+    this.tier = tier;
+    this.clip = null;
+    this.scene = null;
+    this.final = null;
     this.setState('initializing');
-    await this.delay(this.config.chunkDelayMs * 2);
+    if (this.config.download) await this.downloadModels(tier);
+    else await this.delay(this.config.chunkDelayMs * 2);
     const error = this.failAt('init');
     if (error) return this.fail(error);
     const info: ReadyInfo = {
-      tier: TIER.id,
-      backend: TIER.backend,
+      tier: tier.id,
+      backend: tier.backend,
       ortFlavor: 'webgpu',
       capabilities: mockCapabilities(),
-      models: Object.values(TIER.models).map(modelInfo),
+      models: Object.values(tier.models).map((id) => modelInfo(tier, id)),
       warmup: null,
     };
     this.setState('ready');
     this.emit({ type: 'ready', ...info });
     return info;
+  }
+
+  /** Reports a model download like the engine's model manager: each model in four steps, one after another. */
+  private async downloadModels(tier: DeviceTier): Promise<void> {
+    const total = 24 * 2 ** 20;
+    for (const id of Object.values(tier.models)) {
+      for (let step = 1; step <= 4; step++) {
+        await this.delay(this.config.chunkDelayMs * 3);
+        this.emit({
+          type: 'model-progress',
+          modelId: id,
+          bytesDone: Math.round((total * step) / 4),
+          bytesTotal: total,
+          fromCache: false,
+        });
+      }
+    }
   }
 
   async open(file: File): Promise<OpenedInfo> {
@@ -371,14 +406,14 @@ export class MockEngine implements EngineApi {
           origin: 'top-left',
         },
         skeleton: { name: 'halpe26', keypoints: [...HALPE26_KEYPOINTS], values: ['x', 'y', 'score'] },
-        models: Object.values(TIER.models).map(modelInfo),
+        models: Object.values(this.tier.models).map((id) => modelInfo(this.tier, id)),
         processing: {
-          settings: initialSettingsForTier(TIER),
+          settings: initialSettingsForTier(this.tier),
           frameStride: 1,
           startedAt: now,
           finishedAt: now,
           elapsedMs: Math.round(this.deps.now() - started),
-          device: { tier: TIER.id, backend: TIER.backend, adapter: null, browser: 'mock' },
+          device: { tier: this.tier.id, backend: this.tier.backend, adapter: null, browser: 'mock' },
         },
       },
       frames: scene.frames,
@@ -387,7 +422,11 @@ export class MockEngine implements EngineApi {
     };
   }
 
-  async exportResult(request: ExportRequest): Promise<ExportResult> {
+  async exportResult(request: ExportRequest, options: { readonly signal?: AbortSignal } = {}): Promise<ExportResult> {
+    const { signal } = options;
+    // like the real engine: a cancelled export rejects with `export-failed` and `detail.cancelled`
+    const cancelled = () => engineError('export-failed', 'The export was cancelled.', { cancelled: true });
+    if (signal?.aborted) throw cancelled();
     const error = this.failAt('export');
     if (error) throw error;
     // Like the real engine: a finished run, or the frames analysed before a cancel (state `opened`).
@@ -398,6 +437,7 @@ export class MockEngine implements EngineApi {
     if (request.kind === 'mp4') {
       for (let step = 1; step <= 6; step++) {
         await this.delay(this.config.chunkDelayMs * 3);
+        if (signal?.aborted) throw cancelled();
         const total = 6;
         this.emit({
           type: 'export-progress',

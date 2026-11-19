@@ -1,6 +1,6 @@
 import { Download, Plus, Users } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import type { EngineApi } from '@/contracts/protocol';
+import type { EngineHandle } from '@/engine/client';
 import { Button } from '@/ui/button';
 import { Dialog } from '@/ui/dialog';
 import { Sheet } from '@/ui/sheet';
@@ -22,7 +22,7 @@ import { useUiStore } from '../stores/ui';
 import { useRenderOptions, useViewStore } from '../stores/view';
 
 export interface ResultsProps {
-  readonly engine: EngineApi;
+  readonly engine: EngineHandle;
   /** The engine is still working; skeletons stream in and the pill shows progress. */
   readonly analyzing: boolean;
   readonly onCancel: (keep: boolean) => void;

@@ -12,14 +12,26 @@ import { runCapabilityCheck } from './diagnostics';
 import { createAppEngine } from './engine-factory';
 import { appMachine, lighterTier } from './machine';
 import { About } from './screens/About';
-import { Landing } from './screens/Landing';
+import { Landing, type LandingPhase } from './screens/Landing';
 import { Problem } from './screens/Problem';
 import { Results } from './screens/Results';
+import { useEngineStatus } from './stores/engine-status';
 import { useSessionStore } from './stores/session';
 import { useSettingsStore } from './stores/settings';
 import { useUiStore } from './stores/ui';
 
 const ROUTE_ABOUT = '#/about';
+
+/**
+ * What the landing screen shows after a file choice, so it never looks idle: while the engine boots with a clip
+ * waiting (first visit: model download and warm-up), or initialises again for a changed setting, the analysis is
+ * being prepared; once the engine takes the clip, it is being opened.
+ */
+export function landingPhase(state: string, picked: boolean, enginePreparing: boolean): LandingPhase {
+  if (state === 'booting') return picked ? 'preparing' : 'idle';
+  if (state === 'probing') return enginePreparing ? 'preparing' : 'opening';
+  return 'idle';
+}
 
 function useHash(): string {
   const [hash, setHash] = useState(() => window.location.hash);
@@ -45,6 +57,8 @@ export function App() {
   const error = useSelector(actor, (s) => s.context.error);
   const resume = useSelector(actor, (s) => s.context.resume);
   const canFallbackTier = useSelector(actor, (s) => lighterTier(s.context) !== null);
+  const pickedName = useSelector(actor, (s) => s.context.file?.name ?? null);
+  const enginePreparing = useEngineStatus((s) => s.preparing);
   const durationS = useSessionStore((s) => (s.clip ? s.clip.durationUs / 1e6 : 0));
 
   useEffect(() => startAppearanceSync(), []);
@@ -61,7 +75,14 @@ export function App() {
       case 'landing':
       case 'probing':
       case 'offering':
-        return <Landing onFile={(file) => actor.send({ type: 'PICK', file })} busy={state === 'probing'} mock={mock} />;
+        return (
+          <Landing
+            onFile={(file) => actor.send({ type: 'PICK', file })}
+            phase={landingPhase(state, pickedName !== null, enginePreparing)}
+            fileName={pickedName}
+            mock={mock}
+          />
+        );
       case 'analyzing':
       case 'results':
         return (

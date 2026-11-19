@@ -8,6 +8,7 @@ import { appMachine, lighterTier } from './machine';
 import type { ClipInfo } from './mock/clip';
 import { DEFAULT_MOCK_CONFIG, type MockConfig } from './mock/config';
 import { MockEngine } from './mock/engine';
+import { useEngineStatus } from './stores/engine-status';
 import { isPartialResult, useSessionStore } from './stores/session';
 import { useViewStore } from './stores/view';
 
@@ -439,5 +440,110 @@ describe('engine notes and the init attempts the machine starts (M3 #27)', () =>
     await waitFor(actor, (s) => s.matches('results'));
     expect(initialised).toBe(true);
     expect(useSessionStore.getState().warnings.map((w) => w.code)).not.toContain('tier-fallback');
+  });
+});
+
+describe('quality mode between clips (F4)', () => {
+  it('initialises the engine again with the new option for the next clip, in both directions', async () => {
+    const engine = new MockEngine(FAST, { readClip: async () => clip() });
+    const init = vi.spyOn(engine, 'init');
+    let quality = false;
+    const actor = createActor(appMachine, { input: { engine, initOptions: () => ({ qualityOptIn: quality }) } });
+    const stop = bridgeEngine(engine, actor, () => 0);
+    actor.start();
+    cleanups.push(() => {
+      stop();
+      actor.stop();
+    });
+    const exported = async () => {
+      const result = await engine.exportResult({ kind: 'json' });
+      return JSON.parse(await result.blob.text()).processing.device.tier as string;
+    };
+    await waitFor(actor, (s) => s.matches('landing'));
+    expect(actor.getSnapshot().context.tier).toBe('webgpu-default');
+
+    for (const [on, tier] of [
+      [false, 'webgpu-default'],
+      [true, 'webgpu-quality'],
+      [false, 'webgpu-default'],
+    ] as const) {
+      quality = on;
+      actor.send({ type: 'PICK', file: file() });
+      await waitFor(actor, (s) => s.matches('results'));
+      expect(init).toHaveBeenLastCalledWith({ qualityOptIn: on });
+      expect(actor.getSnapshot().context.tier).toBe(tier);
+      expect(await exported()).toBe(tier);
+      actor.send({ type: 'NEW_CLIP' });
+      await waitFor(actor, (s) => s.matches('landing'));
+    }
+    // the first clip needed no second initialisation; each change needed exactly one
+    expect(init).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('preparing the analysis after a file choice (UI/UX 1)', () => {
+  const idle = () =>
+    useEngineStatus.setState({ preparing: false, bytesDone: 0, bytesTotal: 0, downloading: false, percent: 0 });
+
+  it('reports the preparation from the pick until the engine is ready, with the download progress', async () => {
+    idle();
+    const { actor } = start({ ...FAST, download: true });
+    // the user chose a file while the engine was still booting
+    actor.send({ type: 'PICK', file: file() });
+    const seen: { machine: string; preparing: boolean; percent: number; downloading: boolean }[] = [];
+    const off = useEngineStatus.subscribe((s) =>
+      seen.push({
+        machine: String(actor.getSnapshot().value),
+        preparing: s.preparing,
+        percent: s.percent,
+        downloading: s.downloading,
+      }),
+    );
+    expect(useEngineStatus.getState().preparing).toBe(true);
+    expect(actor.getSnapshot().value).toBe('booting');
+    await waitFor(actor, (s) => s.matches('results'));
+    off();
+    const downloading = seen.filter((e) => e.downloading && e.preparing);
+    expect(downloading.length).toBeGreaterThan(3);
+    // the share only grows, although the models arrive one after another, and the app says "preparing" all along
+    for (let i = 1; i < downloading.length; i++) {
+      expect((downloading[i] as { percent: number }).percent).toBeGreaterThanOrEqual(
+        (downloading[i - 1] as { percent: number }).percent,
+      );
+    }
+    expect(downloading.every((e) => e.machine === 'booting')).toBe(true);
+    expect(downloading.at(-1)?.percent).toBe(100);
+    expect(useEngineStatus.getState().preparing).toBe(false);
+  });
+
+  it('prepares again, while the clip is being opened, when a setting made the engine initialise again', async () => {
+    idle();
+    let quality = false;
+    const engine = new MockEngine({ ...FAST, download: true }, { readClip: async () => clip() });
+    const actor = createActor(appMachine, { input: { engine, initOptions: () => ({ qualityOptIn: quality }) } });
+    const stop = bridgeEngine(engine, actor, () => 0);
+    actor.start();
+    cleanups.push(() => {
+      stop();
+      actor.stop();
+    });
+    await waitFor(actor, (s) => s.matches('landing'));
+    expect(useEngineStatus.getState().preparing).toBe(false);
+    quality = true;
+    actor.send({ type: 'PICK', file: file() });
+    expect(actor.getSnapshot().value).toBe('probing');
+    // the engine is asked to initialise again as soon as the open step starts
+    await until(() => useEngineStatus.getState().preparing);
+    expect(actor.getSnapshot().value).toBe('probing');
+    await waitFor(actor, (s) => s.matches('results'));
+    expect(useEngineStatus.getState().preparing).toBe(false);
+  });
+
+  it('stops preparing when the engine fails to start', async () => {
+    idle();
+    const { actor } = start({ ...FAST, errorCode: 'model-download' });
+    actor.send({ type: 'PICK', file: file() });
+    await waitFor(actor, (s) => s.matches('error'));
+    expect(useEngineStatus.getState().preparing).toBe(false);
   });
 });

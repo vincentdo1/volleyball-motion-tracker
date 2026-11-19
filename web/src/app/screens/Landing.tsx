@@ -8,14 +8,19 @@ import { HeroCanvas } from '../components/HeroCanvas';
 import { looksLikeVideo, useWindowDrop } from '../hooks';
 import { fetchSample, SAMPLE_CLIPS, samplesAvailable } from '../samples';
 
+/** `preparing`: the engine loads what the analysis needs (a clip is waiting); `opening`: the clip is being read. */
+export type LandingPhase = 'idle' | 'preparing' | 'opening';
+
 export interface LandingProps {
   readonly onFile: (file: File) => void;
-  /** A clip is being opened or the engine is warming up. */
-  readonly busy: boolean;
+  readonly phase: LandingPhase;
+  /** The clip that was chosen, while one is. */
+  readonly fileName: string | null;
   readonly mock: boolean;
 }
 
-export function Landing({ onFile, busy, mock }: LandingProps) {
+export function Landing({ onFile, phase, fileName, mock }: LandingProps) {
+  const busy = phase !== 'idle';
   const [loadingSample, setLoadingSample] = useState<string | null>(null);
   const accept = (file: File) => {
     if (!looksLikeVideo(file)) {
@@ -51,7 +56,7 @@ export function Landing({ onFile, busy, mock }: LandingProps) {
             Drop in any volleyball clip and get tracked skeletons for every player and the ball, processed entirely in
             this browser tab.
           </p>
-          <DropZone onFile={accept} dragging={dragging} busy={busy} />
+          <DropZone onFile={accept} dragging={dragging} phase={phase} fileName={fileName} />
           {samplesAvailable(mock) && (
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-text-2">Try a sample</span>
