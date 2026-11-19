@@ -679,3 +679,97 @@ describe('finalizing ceiling', () => {
     expect(workers).toHaveLength(2);
   });
 });
+
+describe('init() on an initialised engine', () => {
+  const stateOf = (state: EngineEventOf<'state'>['state']) =>
+    workers.at(-1)?.say({ type: 'state', state, previous: 'processing' });
+
+  it.each(['ready', 'opened', 'done'] as const)(
+    'replaces the worker with a fresh one and the new options when the engine is %s',
+    async (state) => {
+      await engine.init({ tierOverride: 'webgpu-default' });
+      if (state !== 'ready') await engine.open(new File([], 'clip.mp4'));
+      if (state === 'done') stateOf('done');
+      expect(engine.state).toBe(state);
+      const ready = await engine.init({ tierOverride: 'webgpu-quality' });
+      expect(workers).toHaveLength(2);
+      expect(workers[0]?.terminated).toBe(true);
+      expect(workers[1]?.terminated).toBe(false);
+      expect(tierOf(workers[1])).toBe('webgpu-quality');
+      expect(ready.tier).toBe('webgpu-quality');
+      expect(engine.state).toBe('ready');
+      // The clip belongs to the old worker: the next open starts on the new one.
+      await engine.open(new File([], 'next.mp4'));
+      expect(workers[1]?.commands.map((c) => c.type)).toEqual(['init', 'open']);
+      expect(errors).toEqual([]);
+    },
+  );
+
+  it('re-initialises after a failure, and on a fresh engine does nothing special', async () => {
+    await engine.init({});
+    expect(workers).toHaveLength(1);
+    workers[0]?.say({ type: 'error', error: engineError('model-load', 'x') });
+    stateOf('failed');
+    await engine.init({});
+    expect(workers).toHaveLength(2);
+    expect(workers[0]?.terminated).toBe(true);
+  });
+
+  it.each(['processing', 'paused', 'finalizing'] as const)('rejects with invalid-state while %s', async (state) => {
+    await startRun();
+    stateOf(state);
+    await expect(engine.init({ tierOverride: 'webgpu-quality' })).rejects.toMatchObject({ code: 'invalid-state' });
+    expect(workers).toHaveLength(1);
+    expect(workers[0]?.terminated).toBe(false);
+    expect(engine.state).toBe(state);
+  });
+
+  it('rejects with invalid-state while a recovery runs, and while another init is in flight', async () => {
+    await startRun();
+    steady();
+    workers[0]?.timeOut();
+    await expect(engine.init({})).rejects.toMatchObject({ code: 'invalid-state' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workers).toHaveLength(2);
+
+    const fresh = createEngine({ createWorker: () => workers.at(-1) as unknown as Worker });
+    const slow = new FakeWorker();
+    slow.holdReply('init');
+    workers.push(slow);
+    const first = fresh.init({});
+    await expect(fresh.init({})).rejects.toMatchObject({ code: 'invalid-state' });
+    slow.release('init');
+    await first;
+  });
+
+  it('keeps the CPU tier a failed GPU warm-up pinned, so a setting toggle does not retry the GPU', async () => {
+    configure = (worker, generation) => {
+      if (generation === 0) worker.failInit = warmupFailure('webgpu-default');
+    };
+    await engine.init({});
+    expect(tierOf(workers[1])).toBe('wasm-mt');
+    warnings.length = 0;
+    // Toggling a setting re-initialises with options that name no tier: the pin holds, and the GPU is not tried.
+    const ready = await engine.init({ qualityOptIn: true });
+    expect(workers).toHaveLength(3);
+    expect(workers[1]?.terminated).toBe(true);
+    expect(tierOf(workers[2])).toBe('wasm-mt');
+    expect(ready.tier).toBe('wasm-mt');
+    expect(warnings).toEqual([]);
+    await engine.init({});
+    expect(tierOf(workers[3])).toBe('wasm-mt');
+    expect(workers.filter((w, i) => i > 1 && w.failInit)).toEqual([]);
+  });
+
+  it('lets an explicit tier override in the new options win over the pin', async () => {
+    configure = (worker, generation) => {
+      if (generation === 0) worker.failInit = warmupFailure('webgpu-default');
+    };
+    await engine.init({});
+    await engine.init({ tierOverride: 'webgpu-default' });
+    expect(tierOf(workers[2])).toBe('webgpu-default');
+    // The override replaced the pin: the next plain re-init is back to the device's own choice.
+    await engine.init({});
+    expect(tierOf(workers[3])).toBeUndefined();
+  });
+});

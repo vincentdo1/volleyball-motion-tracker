@@ -3,6 +3,7 @@ import type { OnlineTracker, RawPerson, TrackedPerson } from '@/contracts/pipeli
 import { SampleFlag } from '@/contracts/posetrack';
 import { unpackPersons } from '@/contracts/posetrack-codec';
 import { decodeBatches } from '../store/chunk-codec';
+import { maxTrackIdOf } from '../store/chunk-writer';
 import type { Manifest, SessionStore } from '../store/session-store';
 
 /** Extra media time replayed beyond the tracker's own memory, so track confirmation is warm too. */
@@ -41,10 +42,30 @@ export function resumeTracker(tracker: OnlineTracker, replayed: ReplayResult): O
 export interface ReplayResult {
   /** Id the fresh tracker assigned -> id stored in the chunks. */
   readonly idMap: ReadonlyMap<number, number>;
+  /** Highest track id stored anywhere in the session, not only in the replayed tail. */
   readonly maxStoredId: number;
 }
 
-/** Feeds the tail of the stored frames (the last `lostTtlS` + margin) into a fresh tracker. */
+/**
+ * Highest track id over every stored chunk: the manifest's per-chunk high-water marks, plus one scan of each chunk
+ * of a manifest written before those existed.
+ */
+async function sessionMaxTrackId(store: SessionStore, manifest: Manifest): Promise<number> {
+  let max = 0;
+  for (const chunk of manifest.chunks) {
+    if (chunk.maxTrackId !== undefined) {
+      max = Math.max(max, chunk.maxTrackId);
+      continue;
+    }
+    for (const batch of decodeBatches(await store.readChunk(chunk.startUs))) max = Math.max(max, maxTrackIdOf(batch));
+  }
+  return max;
+}
+
+/**
+ * Feeds the tail of the stored frames (the last `lostTtlS` + margin) into a fresh tracker. The tail only warms the
+ * tracker; the id high-water mark comes from the whole session.
+ */
 export async function replayStoredFrames(
   tracker: OnlineTracker,
   store: SessionStore,
@@ -54,9 +75,9 @@ export async function replayStoredFrames(
   const last = [...manifest.chunks].sort((a, b) => a.startUs - b.startUs).at(-1);
   const idMap = new Map<number, number>();
   if (!last) return { idMap, maxStoredId: 0 };
+  let maxStoredId = await sessionMaxTrackId(store, manifest);
   const batches = decodeBatches(await store.readChunk(last.startUs));
   const cutoffUs = last.endUs - (params.lostTtlS + params.confirmWindowS + REPLAY_MARGIN_S) * 1e6;
-  let maxStoredId = 0;
   for (const batch of batches) {
     for (let i = 0; i < batch.count; i++) {
       const stored = unpackPersons(batch, i);

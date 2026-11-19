@@ -22,6 +22,11 @@ export interface ManifestChunk {
   readonly endUs: number;
   readonly frames: number;
   readonly bytes: number;
+  /**
+   * Highest track id stored in this chunk (0 when it holds no person). Resume numbers new people above the maximum
+   * over every chunk; manifests written before this field existed lack it and are scanned once instead.
+   */
+  readonly maxTrackId?: number;
 }
 
 export interface Manifest {

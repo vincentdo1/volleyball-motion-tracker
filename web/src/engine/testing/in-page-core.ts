@@ -20,7 +20,12 @@ export interface InPageCore {
  * their transfer lists: tests can then check zero-copy transfer and drive acknowledgements by hand.
  */
 export function createInPageCore(
-  options: { ml?: StubMlOptions; runtime?: StubRuntimeOptions; timeoutFloorMs?: number } = {},
+  options: {
+    ml?: StubMlOptions;
+    runtime?: StubRuntimeOptions;
+    timeoutFloorMs?: number;
+    sweepSpool?: () => Promise<unknown>;
+  } = {},
 ): InPageCore {
   const channel = new MessageChannel();
   const events: EngineEvent[] = [];
@@ -40,6 +45,7 @@ export function createInPageCore(
       loadMl: async () => createStubMl(options.ml),
       runtime: createStubRuntimeProvider(options.runtime),
       ...(options.timeoutFloorMs === undefined ? {} : { timeoutFloorMs: options.timeoutFloorMs }),
+      ...(options.sweepSpool ? { sweepSpool: options.sweepSpool } : {}),
     },
     (event) => {
       channel.port1.postMessage(event, transferablesOf(event));

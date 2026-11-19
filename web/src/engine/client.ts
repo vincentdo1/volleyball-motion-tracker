@@ -65,6 +65,9 @@ interface RecoveryPlan {
   readonly warning?: EngineWarning;
 }
 
+/** States in which `init()` would pull the worker out from under a request or a run. */
+const NOT_REINITIALISABLE: readonly EngineState[] = ['initializing', 'opening', 'processing', 'paused', 'finalizing'];
+
 type Failure = 'gpu-lost' | 'stalled' | 'inference-failed';
 
 interface Pending {
@@ -82,6 +85,11 @@ export { cpuTierBelow, stepDownTier };
 
 class EngineClient implements EngineApi {
   private worker: Worker | null = null;
+  /** A worker has been spawned at some point (the first one is generation 0). */
+  private spawned = false;
+  private initInFlight = false;
+  /** CPU tier a failed GPU warm-up pinned; a re-initialisation keeps it unless its options name a tier. */
+  private cpuPin: DeviceTierId | null = null;
   private generation = 0;
   private nextRequestId = 1;
   private nextExportId = 1;
@@ -125,16 +133,63 @@ class EngineClient implements EngineApi {
   }
 
   /**
-   * Starts the engine. When the first inference on a WebGPU tier fails (the device cannot run the shaders, Firefox
-   * M2-10), the worker is terminated, which frees the whole WebGPU runtime, and a fresh one starts on the CPU tier
-   * below; later recoveries stay on that tier. Any other failure is the caller's.
+   * Starts the engine, or re-initialises an initialised one with new options: in `idle`, `ready`, `opened`, `done` and
+   * `failed` the worker is terminated (which frees everything it loaded) and a fresh one starts, so the clip has to
+   * be opened again. Rejects with `invalid-state` while a run is processing, paused, finalizing or recovering, or while
+   * another init or open is in flight.
+   *
+   * When the first inference on a WebGPU tier fails (the device cannot run the shaders, Firefox M2-10), the worker is
+   * terminated and a fresh one starts on the CPU tier below; later recoveries stay on that tier, and so does a later
+   * re-initialisation, unless its options name a tier themselves. Any other failure is the caller's.
    */
   async init(options: InitOptions = {}): Promise<ReadyInfo> {
+    if (this.recovering || this.initInFlight || NOT_REINITIALISABLE.includes(this.current)) {
+      throw new EngineException(
+        engineError('invalid-state', `The engine cannot be initialised while it is ${this.describeBusy()}.`),
+      );
+    }
+    this.initInFlight = true;
+    try {
+      let effective = options;
+      if (options.tierOverride !== undefined) this.cpuPin = null;
+      else if (this.cpuPin) effective = { ...options, tierOverride: this.cpuPin };
+      if (this.spawned) {
+        // A worker ran before (and may still be alive): replace it, so nothing of the old initialisation stays loaded.
+        this.failPending(engineError('invalid-state', 'The engine was initialised again.'));
+        this.terminate();
+        this.generation++;
+        this.resetSession();
+      }
+      return await this.beginInit(effective);
+    } finally {
+      this.initInFlight = false;
+    }
+  }
+
+  private describeBusy(): string {
+    return this.recovering ? 'recovering' : this.initInFlight ? 'initialising' : this.current;
+  }
+
+  /** What a fresh worker starts without: the opened clip, the run being followed and the failure bookkeeping. */
+  private resetSession(): void {
+    this.current = 'idle';
+    this.ready = null;
+    this.opened = null;
+    this.file = null;
+    this.startOptions = null;
+    this.stalls = 0;
+    this.losses = [];
+    this.held = null;
+    this.cancelRequested = false;
+  }
+
+  private async beginInit(options: InitOptions): Promise<ReadyInfo> {
     this.initOptions = options;
     const first = await this.initWorker(options, true);
     if ('ready' in first) return first.ready;
     this.terminate();
     this.generation++;
+    this.cpuPin = first.cpuTier;
     this.initOptions = { ...options, tierOverride: first.cpuTier };
     const second = await this.initWorker(this.initOptions, false);
     if (!('ready' in second))
@@ -282,6 +337,7 @@ class EngineClient implements EngineApi {
       if (this.worker === worker) this.crashed('the engine worker sent an unreadable message');
     });
     this.worker = worker;
+    this.spawned = true;
     return worker;
   }
 
@@ -505,7 +561,7 @@ class EngineClient implements EngineApi {
       this.generation++;
       if (tier) this.initOptions = { ...this.initOptions, tierOverride: tier };
       if (plan.warning) this.dispatch({ type: 'warning', warning: plan.warning });
-      await this.init(this.initOptions);
+      await this.beginInit(this.initOptions);
       if (this.cancelRequested || !file) return;
       await this.open(file);
       if (this.cancelRequested || !startOptions) return;

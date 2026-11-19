@@ -20,6 +20,7 @@ import { containTransform, type SkeletonRendererFactory } from '@/contracts/rend
 import { createFrameSource, type FrameSource } from '@/render';
 import { fail } from '../core/engine-exception';
 import { ProgressTracker } from '../process/progress';
+import { discardSpool, newSpoolName, sweepSpool } from './spool';
 
 /** Largest in-memory MP4 (plan §3.11); bigger exports are fragmented straight to OPFS. */
 const IN_MEMORY_LIMIT_BYTES = 1024 ** 3;
@@ -35,7 +36,12 @@ export interface Mp4Job {
   readonly onProgress: (progress: ProgressInfo) => void;
   /** Where oversized exports are spooled; omitted when OPFS is unavailable. */
   readonly spoolDirectory?: FileSystemDirectoryHandle;
+  /** Estimated size above which the export is spooled to OPFS instead of kept in memory (tests lower it). */
+  readonly spoolThresholdBytes?: number;
+  /** Monotonic clock of the progress reports. */
   readonly now?: () => number;
+  /** Wall clock in ms, for the age of spool files. */
+  readonly wallClock?: () => number;
 }
 
 export interface Mp4Result {
@@ -120,15 +126,17 @@ export async function exportMp4(job: Mp4Job): Promise<Mp4Result> {
   const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
   let output: Output | null = null;
   const renderer = job.rendererFactory();
+  const spool = job.spoolDirectory;
+  let spoolFile: { name: string; handle: FileSystemSyncAccessHandleLike } | null = null;
   try {
     const track = await input.getPrimaryVideoTrack();
     if (!track) throw fail('no-video-track', 'The source file has no video track.');
     const [startUs, endUs] = request.rangeUs ?? [0, Number.POSITIVE_INFINITY];
     const estimatedBytes = (bitrate / 8) * (clip.durationUs / 1e6);
-    const spool = estimatedBytes > IN_MEMORY_LIMIT_BYTES ? job.spoolDirectory : undefined;
-    let spoolFile: { name: string; handle: FileSystemSyncAccessHandleLike } | null = null;
-    if (spool) {
-      const name = `export-${Date.now()}.mp4`;
+    if (spool && estimatedBytes > (job.spoolThresholdBytes ?? IN_MEMORY_LIMIT_BYTES)) {
+      // Leftovers of earlier exports go first; this export's own file does not exist yet.
+      await sweepSpool(spool, job.wallClock ? { now: job.wallClock } : {});
+      const name = newSpoolName(job.wallClock);
       const fileHandle = (await spool.getFileHandle(name, { create: true })) as FileSystemFileHandle & {
         createSyncAccessHandle(): Promise<FileSystemSyncAccessHandleLike>;
       };
@@ -202,6 +210,8 @@ export async function exportMp4(job: Mp4Job): Promise<Mp4Result> {
     return { blob, frames: done, width: size.width, height: size.height, audioIncluded: audioCopy !== null };
   } catch (error) {
     await output?.cancel().catch(() => undefined);
+    // A failed or cancelled export leaves nothing behind; the file of a completed one is for the sweep (see spool.ts).
+    if (spool && spoolFile) await discardSpool(spool, spoolFile);
     throw error;
   } finally {
     renderer.dispose();

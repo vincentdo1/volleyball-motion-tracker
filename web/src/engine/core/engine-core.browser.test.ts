@@ -51,6 +51,20 @@ async function untilChunks(p: InPageCore, count: number): Promise<void> {
 }
 
 describe('init', () => {
+  it('sweeps the stale export spool files in the background, and an init does not depend on it', async () => {
+    let swept = 0;
+    const failing = createInPageCore({
+      sweepSpool: async () => {
+        swept++;
+        throw new Error('OPFS is not available');
+      },
+    });
+    page = failing;
+    const reply = await init(failing);
+    expect(reply.ok).toBe(true);
+    expect(swept).toBe(1);
+  });
+
   it('releases the model sessions a failed engine still holds when it is initialised again (M3 #4)', async () => {
     const { page: p, live } = create({ failAtPtsUs: 400_000 });
     expect((await init(p)).ok).toBe(true);

@@ -15,6 +15,7 @@ import {
 import { detectCapabilities } from '../capabilities/detect';
 import { selectTier } from '../capabilities/tier';
 import { ExportManager, isCancellation } from '../export/export-manager';
+import { sweepExportSpool } from '../export/spool';
 import { type OpenedClip, openClip } from '../ingest/open-clip';
 import { MAX_IN_FLIGHT } from '../process/frame-loop';
 import { ProcessingRun, type RunHost } from '../process/processing-run';
@@ -36,6 +37,8 @@ export interface EngineDeps {
   readonly timeoutFloorMs?: number;
   /** Overrides the per-backend `MAX_IN_FLIGHT` (tests and tuning). */
   readonly maxInFlight?: number;
+  /** Sweeps the stale spool files of earlier MP4 exports when the engine initialises (tests replace it). */
+  readonly sweepSpool?: () => Promise<unknown>;
 }
 
 interface Loaded {
@@ -169,6 +172,8 @@ export class EngineCore {
     }
     this.machine.transition('initializing');
     this.options = command.options;
+    // Spool files of earlier exports that nothing removed: swept in the background, never a reason for an init to fail.
+    void (this.deps.sweepSpool ?? sweepExportSpool)().catch(() => undefined);
     try {
       const ready = await this.initialise(command.options);
       this.machine.transition('ready');

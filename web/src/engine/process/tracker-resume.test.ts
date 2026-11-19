@@ -79,4 +79,69 @@ describe('resumeTracker', () => {
     expect([...replayed.idMap.values()]).toEqual([2]);
     expect(replayed.maxStoredId).toBe(2);
   });
+
+  /** Frames of one chunk: `ids` are the people seen in each of three frames. */
+  function chunkOf(startUs: number, ids: readonly number[]): Uint8Array {
+    const frames = [0, 1, 2].map((i) => ({
+      ptsUs: startUs + i * 33_333,
+      durationUs: 33_333,
+      flags: 3,
+      persons: ids.map((trackId) => ({
+        trackId,
+        box: [100 * trackId, 0, 100 * trackId + 10, 10],
+        boxScore: 0.9,
+        keypoints: new Array(78).fill(0),
+      })),
+      ball: null,
+    }));
+    return encodeBatch(packFrames(frames));
+  }
+
+  /** Three chunks: persons 1-4 only in the first, nobody in the last (the tail that gets replayed). */
+  function session(withMarks: boolean) {
+    const files = new Map<number, Uint8Array>([
+      [0, chunkOf(0, [1, 4])],
+      [10_000_000, chunkOf(10_000_000, [2])],
+      [20_000_000, chunkOf(20_000_000, [])],
+    ]);
+    const marks = new Map([
+      [0, 4],
+      [10_000_000, 2],
+      [20_000_000, 0],
+    ]);
+    const reads: number[] = [];
+    const manifest = {
+      chunks: [...files.keys()].map((startUs) => ({
+        startUs,
+        endUs: startUs + 10_000_000,
+        frames: 3,
+        bytes: 0,
+        ...(withMarks ? { maxTrackId: marks.get(startUs) } : {}),
+      })),
+    } as unknown as Manifest;
+    const store = {
+      readChunk: async (startUs: number) => {
+        reads.push(startUs);
+        return files.get(startUs) as Uint8Array;
+      },
+    } as unknown as SessionStore;
+    return { manifest, store, reads };
+  }
+
+  it('numbers newcomers above the highest id of the whole session, not of the replayed tail', async () => {
+    const { manifest, store, reads } = session(true);
+    const fresh = fakeTracker();
+    const replayed = await replayStoredFrames(fresh, store, manifest, INITIAL_TRACKER_PARAMS);
+    expect(replayed.maxStoredId).toBe(4);
+    // Only the tail is read: the other chunks' ids come from the manifest.
+    expect(reads).toEqual([20_000_000]);
+    expect(resumeTracker(fresh, replayed).update(30_000_000, [person(700)])[0]?.trackId).toBe(5);
+  });
+
+  it('scans every chunk once for the maximum when the manifest has no high-water marks', async () => {
+    const { manifest, store, reads } = session(false);
+    const replayed = await replayStoredFrames(fakeTracker(), store, manifest, INITIAL_TRACKER_PARAMS);
+    expect(replayed.maxStoredId).toBe(4);
+    expect(new Set(reads)).toEqual(new Set([0, 10_000_000, 20_000_000]));
+  });
 });

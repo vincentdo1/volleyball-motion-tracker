@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FinalResult } from '@/contracts/posetrack';
 import type { EngineApi, EngineEvent, EngineEventOf } from '@/contracts/protocol';
 import { createStubEngine, fixtureFile } from '../testing/stub-engine';
+import type { StubMlOptions } from '../testing/stub-ml';
 import { listSessions } from './session-index';
 
 const CLIP = 'github_gtu_20250316_002_volleyball_tracking.mp4';
@@ -11,8 +12,8 @@ afterEach(async () => {
   await Promise.all(engines.splice(0).map((e) => e.dispose()));
 });
 
-function engineWith(delayMs = 0): EngineApi {
-  const api = createStubEngine({ ml: { delayMs } });
+function engineWith(delayMs = 0, presence?: StubMlOptions['presence']): EngineApi {
+  const api = createStubEngine({ ml: { delayMs, ...(presence ? { presence } : {}) } });
   engines.push(api);
   return api;
 }
@@ -42,8 +43,8 @@ function plain(result: FinalResult) {
   };
 }
 
-async function fullRun(): Promise<FinalResult> {
-  const api = engineWith();
+async function fullRun(presence?: StubMlOptions['presence']): Promise<FinalResult> {
+  const api = engineWith(0, presence);
   const finals = listen(api, 'final');
   await api.init({ tierOverride: 'webgpu-default' });
   await api.open(await fixtureFile(CLIP));
@@ -124,6 +125,41 @@ describe('persistence and resume', () => {
     const result = finals[0]?.result;
     expect(result).toBeDefined();
     if (result) expect(plain(result)).toEqual(uninterrupted);
+  }, 60_000);
+
+  it('numbers a person who arrives after a resume above every stored id, as an uninterrupted run does', async () => {
+    // Person 0 stays; persons 1 and 2 are seen only in the first chunk; person 3 arrives after the resume point.
+    // The chunk replayed on resume (10-20 s) holds person 0 alone, so its own maximum id (1) is not the session's.
+    const presence: StubMlOptions['presence'] = [
+      [0, 0, 22_000_000],
+      [1, 1_000_000, 8_000_000],
+      [2, 2_000_000, 8_000_000],
+      [3, 26_000_000, 1e12],
+    ];
+    const uninterrupted = await fullRun(presence);
+    expect(uninterrupted.tracks.map((t) => t.id)).toEqual([1, 2, 3, 4]);
+
+    const first = engineWith(2, presence);
+    await first.init({ tierOverride: 'webgpu-default' });
+    await first.open(await fixtureFile(CLIP));
+    await first.start();
+    await new Promise<void>((resolve) => {
+      first.on('chunk', (e) => (e.batch.ptsUs[0] ?? 0) >= 21_000_000 && resolve());
+    });
+    await first.cancel();
+    await first.dispose();
+
+    const second = engineWith(0, presence);
+    const finals = listen(second, 'final');
+    await second.init({ tierOverride: 'webgpu-default' });
+    const opened = await second.open(await fixtureFile(CLIP));
+    expect(opened.resume).toMatchObject({ doneUs: 20_000_000, chunks: 2 });
+    const done = untilDone(second);
+    await second.start({ resume: true });
+    await done;
+    const result = finals[0]?.result;
+    expect(result?.tracks.map((t) => t.id)).toEqual([1, 2, 3, 4]);
+    if (result) expect(plain(result)).toEqual(plain(uninterrupted));
   }, 60_000);
 
   it('ignores saved chunks when the settings differ', async () => {

@@ -3,7 +3,7 @@
  * `self.__WB_MANIFEST` with the build's precache list. The project compiles with the DOM lib, so the few worker
  * types used here are declared locally.
  */
-import { APP_CACHE_PREFIX, ORT_CACHE, routeRequest } from './routes';
+import { APP_CACHE_PREFIX, cacheMatchOptions, ORT_CACHE, routeRequest } from './routes';
 
 interface PrecacheEntry {
   readonly url: string;
@@ -43,6 +43,12 @@ const entries = self.__WB_MANIFEST.map((entry) => (typeof entry === 'string' ? {
 const appCache = `${APP_CACHE_PREFIX}${buildId(entries.map((e) => `${e.url}@${e.revision ?? ''}`).join('\n'))}`;
 const precached = new Set(entries.map((e) => new URL(e.url, self.location.href).pathname));
 
+const shellMatchOptions = cacheMatchOptions(
+  { url: new URL(SHELL_URL, self.location.origin).href },
+  self.location.origin,
+  precached,
+);
+
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(appCache).then((cache) => cache.addAll(entries.map((e) => e.url))));
 });
@@ -68,7 +74,7 @@ self.addEventListener('message', (event) => {
 
 async function cacheFirst(request: Request, cacheName: string): Promise<Response> {
   const cache = await caches.open(cacheName);
-  const hit = await cache.match(request);
+  const hit = await cache.match(request, cacheMatchOptions(request, self.location.origin, precached));
   if (hit) return hit;
   const response = await fetch(request);
   if (response.ok) await cache.put(request, response.clone());
@@ -85,7 +91,9 @@ self.addEventListener('fetch', (event) => {
       event.respondWith(cacheFirst(event.request, appCache));
       break;
     case 'app-shell':
-      event.respondWith(fetch(event.request).catch(async () => (await caches.match(SHELL_URL)) ?? Response.error()));
+      event.respondWith(
+        fetch(event.request).catch(async () => (await caches.match(SHELL_URL, shellMatchOptions)) ?? Response.error()),
+      );
       break;
     case 'network':
       break;

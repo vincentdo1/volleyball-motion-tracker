@@ -26,6 +26,12 @@ import { fail } from '../core/engine-exception';
 export interface StubMlOptions {
   /** People on the court. */
   readonly persons?: number;
+  /**
+   * Who is on the court when: `[personIndex, fromUs, toUs)` windows (replaces `persons`). The stub tracker then keeps
+   * one id per person, handed out in order of first sight, so a person who leaves is gone for good and a newcomer
+   * takes the next id (like the real tracker once a track has expired).
+   */
+  readonly presence?: readonly (readonly [number, number, number])[];
   /** Simulated latency of one `process()` call. */
   readonly delayMs?: number;
   /** Extra latency of the first `process()` call, like the shader compilation of a cold start. */
@@ -111,7 +117,7 @@ function createStubPipeline(
   settings: ReturnType<typeof initialSettingsForTier>,
   backend: string,
 ): FramePipeline {
-  const personCount = options.persons ?? 4;
+  const personCount = options.presence ? 1 + Math.max(...options.presence.map(([who]) => who)) : (options.persons ?? 4);
   const ballWindow = options.ballWindow ?? 3;
   let pendingBall: number[] = [];
   let running = 0;
@@ -156,6 +162,11 @@ function createStubPipeline(
       if (input.ptsUs === options.failAtPtsUs) throw fail('inference-failed', 'stub: inference failed');
       const persons: RawPerson[] = [];
       for (let i = 0; i < personCount; i++) {
+        if (
+          options.presence &&
+          !options.presence.some(([who, from, to]) => who === i && input.ptsUs >= from && input.ptsUs < to)
+        )
+          continue;
         const { box, keypoints } = stubPersonAt(i, input.ptsUs);
         persons.push({ box, score: 0.9, keypoints, origin: input.runDetector ? 'detector' : 'propagated' });
       }
@@ -172,7 +183,20 @@ function createStubPipeline(
   };
 }
 
-function createStubTracker(): OnlineTracker {
+function createStubTracker(options: StubMlOptions): OnlineTracker {
+  if (options.presence) {
+    // Identity by position: `stubPersonAt` spaces people 150 px apart and moves them by at most 30.
+    const ids = new Map<number, number>();
+    return {
+      update: (_ptsUs, persons): readonly TrackedPerson[] =>
+        persons.map((person) => {
+          const who = Math.round(((person.box[0] + person.box[2]) / 2 - 200) / 150);
+          if (!ids.has(who)) ids.set(who, ids.size + 1);
+          return { ...person, trackId: ids.get(who) as number };
+        }),
+      reset: () => ids.clear(),
+    };
+  }
   return {
     update: (_ptsUs, persons): readonly TrackedPerson[] => persons.map((person, i) => ({ ...person, trackId: i + 1 })),
     reset: () => undefined,
@@ -255,7 +279,7 @@ export function createStubMl(options: StubMlOptions = {}): MlModule {
     defaultSettings: initialSettingsForTier,
     sessionOptions: (_role, backend) => ({ executionProviders: [backend === 'webgpu' ? 'webgpu' : 'wasm'] }),
     createFramePipeline: async (runtime, settings) => createStubPipeline(options, settings, runtime.backend),
-    createOnlineTracker: createStubTracker,
+    createOnlineTracker: () => createStubTracker(options),
     finalize: (input) => {
       options.onFinalize?.();
       if (options.blockFinalize) blockThread();

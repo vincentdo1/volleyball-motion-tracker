@@ -48,10 +48,23 @@ export async function createSessions(
   backend: MlBackend,
   models: { readonly detector: LoadedModel; readonly pose: LoadedModel; readonly ball: LoadedModel },
 ): Promise<SessionSet> {
-  const detector = await create(ort, ml, backend, 'person-detector', models.detector);
-  const pose = await create(ort, ml, backend, 'pose', models.pose);
-  const ball = await create(ort, ml, backend, 'ball', models.ball);
-  return { detector, pose, ball };
+  const created: InferenceSession[] = [];
+  const next = async (role: ModelRole, model: LoadedModel): Promise<InferenceSession> => {
+    const session = await create(ort, ml, backend, role, model);
+    created.push(session);
+    return session;
+  };
+  try {
+    const detector = await next('person-detector', models.detector);
+    const pose = await next('pose', models.pose);
+    const ball = await next('ball', models.ball);
+    return { detector, pose, ball };
+  } catch (error) {
+    // A retry or fallback after this failure must not find the earlier sessions still holding GPU or WASM memory.
+    // `allSettled`: a session that cannot be released does not replace the error that is being reported.
+    await Promise.allSettled(created.map(async (session) => session.release()));
+    throw error;
+  }
 }
 
 export async function releaseSessions(sessions: SessionSet): Promise<void> {

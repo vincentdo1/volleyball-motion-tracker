@@ -9,12 +9,20 @@ export function windowStartOf(ptsUs: number): number {
   return Math.floor(ptsUs / CHUNK_WINDOW_US) * CHUNK_WINDOW_US;
 }
 
+/** Highest track id of the batch (0 when nobody is tracked in it). */
+export function maxTrackIdOf(batch: PackedFrameBatch): number {
+  let max = 0;
+  const total = batch.personOffsets[batch.count] ?? batch.trackIds.length;
+  for (let p = 0; p < total; p++) max = Math.max(max, batch.trackIds[p] ?? 0);
+  return max;
+}
+
 /**
  * Appends streamed batches to the chunk file of their 10 s window and records a window in the manifest once the
  * run has moved past it (or finished). Only manifest entries count on resume, so a crash mid-window just redoes it.
  */
 export class ChunkWriter {
-  private open: { startUs: number; frames: number; bytes: number; lastEndUs: number } | null = null;
+  private open: { startUs: number; frames: number; bytes: number; lastEndUs: number; maxTrackId: number } | null = null;
   private chunks: ManifestChunk[];
 
   constructor(
@@ -29,13 +37,14 @@ export class ChunkWriter {
     if (this.open && this.open.startUs !== startUs) await this.closeWindow(startUs);
     if (!this.open) {
       await this.store.startChunk(startUs);
-      this.open = { startUs, frames: 0, bytes: 0, lastEndUs: startUs };
+      this.open = { startUs, frames: 0, bytes: 0, lastEndUs: startUs, maxTrackId: 0 };
     }
     const bytes = encodeBatch(batch);
     await this.store.appendChunk(startUs, bytes);
     const last = batch.count - 1;
     this.open.frames += batch.count;
     this.open.bytes += bytes.byteLength;
+    this.open.maxTrackId = Math.max(this.open.maxTrackId, maxTrackIdOf(batch));
     this.open.lastEndUs = (batch.ptsUs[last] as number) + (batch.durationUs[last] as number);
   }
 
@@ -58,6 +67,7 @@ export class ChunkWriter {
       endUs: open.lastEndUs,
       frames: open.frames,
       bytes: open.bytes,
+      maxTrackId: open.maxTrackId,
     };
     return { ...this.manifest, chunks: [...this.chunks, window] };
   }
@@ -72,6 +82,7 @@ export class ChunkWriter {
       endUs: nextStartUs === null ? open.lastEndUs : open.startUs + CHUNK_WINDOW_US,
       frames: open.frames,
       bytes: open.bytes,
+      maxTrackId: open.maxTrackId,
     });
     await this.commit(false);
   }

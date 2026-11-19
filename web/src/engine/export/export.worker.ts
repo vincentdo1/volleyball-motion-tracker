@@ -6,6 +6,22 @@ import type { ExportWorkerCommand, ExportWorkerEvent } from './export-protocol';
 import { exportMp4 } from './mp4-export';
 import { loadRendererFactory } from './renderer-loader';
 
+/** Test knobs travel in the worker name as JSON; the app names it `export`, which carries none. */
+interface WorkerConfig {
+  readonly spoolThresholdBytes?: number;
+  /** Added to the wall clock that dates and ages spool files. */
+  readonly wallClockOffsetMs?: number;
+}
+
+function readConfig(): WorkerConfig {
+  try {
+    return self.name.startsWith('{') ? (JSON.parse(self.name) as WorkerConfig) : {};
+  } catch {
+    return {};
+  }
+}
+
+const config = readConfig();
 const abort = new AbortController();
 const post = (event: ExportWorkerEvent) => (self as unknown as Worker).postMessage(event);
 
@@ -29,6 +45,10 @@ async function run(command: Extract<ExportWorkerCommand, { type: 'run' }>): Prom
       signal: abort.signal,
       onProgress: (progress) => post({ type: 'progress', progress }),
       ...(spool ? { spoolDirectory: spool } : {}),
+      ...(config.spoolThresholdBytes === undefined ? {} : { spoolThresholdBytes: config.spoolThresholdBytes }),
+      ...(config.wallClockOffsetMs === undefined
+        ? {}
+        : { wallClock: () => Date.now() + (config.wallClockOffsetMs as number) }),
     });
     post({ type: 'done', ...done });
   } catch (error) {
