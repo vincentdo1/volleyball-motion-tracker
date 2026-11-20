@@ -58,7 +58,7 @@ function worstJump(track: ExportedTrack): number {
 
 test('F1: after a resume at about 50 % every new person gets an id above all earlier ones; no id is shared', async ({
   browser,
-}) => {
+}, testInfo) => {
   const dir = outDir('m5-resume-ids');
 
   // 1. uninterrupted run in its own context
@@ -142,4 +142,33 @@ test('F1: after a resume at about 50 % every new person gets an id above all ear
   // two people under one id would be fewer tracks than the uninterrupted run and a teleporting track
   expect(r.tracks, 'track count against the uninterrupted run').toBeGreaterThanOrEqual(u.tracks - 3);
   expect(r.worstJumpBH, 'no track teleports (identity merge)').toBeLessThanOrEqual(Math.max(u.worstJumpBH * 1.5, 8));
+
+  // The resume guarantee (Codex re-review N2): the frame table and every player track come out exactly as in the
+  // uninterrupted run, and so does the ball up to the resume point. After it the ball model starts a new 9-frame
+  // window and its no-ball gate again, so the ball there is a fresh analysis: about as many frames with a measured
+  // ball (gtu: 490 against 496 of 691), with gaps filled differently (inferred 187 against 127). Exact ball resume is a
+  // follow-up.
+  expect(resumed.frames, 'frame table').toEqual(uninterrupted.frames);
+  expect(resumed.tracks, 'every player track').toEqual(uninterrupted.tracks);
+  const rb = resumed.ball?.samples;
+  const ub = uninterrupted.ball?.samples;
+  expect(rb && ub, 'both runs have a ball track').toBeTruthy();
+  if (!rb || !ub) return;
+  expect(rb.ptsUs).toEqual(ub.ptsUs);
+  const before = rb.ptsUs.filter((pts) => pts < resumeUs).length;
+  for (const key of ['visibility', 'source', 'radius', 'confidence'] as const) {
+    expect(rb[key].slice(0, before), `ball ${key} before the resume point`).toEqual(ub[key].slice(0, before));
+  }
+  expect(rb.xy.slice(0, before * 2), 'ball positions before the resume point').toEqual(ub.xy.slice(0, before * 2));
+  const measured = (v: number[]) => v.slice(before).filter((x) => x === 1).length;
+  const ballAfter = { resumed: measured(rb.visibility), uninterrupted: measured(ub.visibility) };
+  const labelsDiffer = rb.visibility.slice(before).filter((x, i) => x !== ub.visibility[before + i]).length;
+  testInfo.annotations.push({
+    type: 'ball after the resume point',
+    description: `measured ${ballAfter.resumed} vs ${ballAfter.uninterrupted}; visibility labels differ on ${labelsDiffer} of ${rb.ptsUs.length - before}`,
+  });
+  expect(
+    Math.abs(ballAfter.resumed - ballAfter.uninterrupted),
+    'frames with a measured ball after the resume point, against the uninterrupted run',
+  ).toBeLessThanOrEqual(Math.ceil(ballAfter.uninterrupted * 0.05));
 });

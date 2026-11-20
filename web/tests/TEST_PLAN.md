@@ -119,7 +119,7 @@ TEST_PLAN.md; `clips.json`; harness reproduces 06 §2.1 within 0.1 pt; e2e suite
 ### M4
 | Criterion | Check |
 |---|---|
-| PWA offline after first load | `tests/e2e/m5-offline.spec.ts`: fresh context, wait for the service worker to control the page, `context.setOffline(true)`, reload (no online reload), landing; then an analysis from the caches after an online run |
+| PWA offline after first load | `tests/e2e/m5-offline.spec.ts`: fresh context, wait for the service worker to control the page and for the first visit's set-up (models and runtime files cached), `context.setOffline(true)`, reload (no online reload), landing, then a clip analysed offline; and an analysis from the caches after an online run |
 | `wrangler dev` headers and R2 routes | `npm run cf:dev` then curl: COOP, COEP, CORP, range requests on `/models/*` and `/ort/*` |
 | first-visit app JS <= 1 MB brotli (excl. ORT wasm, models) | script over `dist/assets` with brotli level 11 |
 | licence audit | `THIRD_PARTY_NOTICES.md` against `package-lock.json` and `models.lock.json`; no AGPL/GPL |
@@ -161,7 +161,7 @@ build; the dev server shows the StrictMode initialisation error, M2-2) and skips
 | `resume-cancel.spec.ts` | real | Discard < 250 ms and the same clip reruns; Keep shows the analysed part; Discard then an immediate new file (M2-8); a kept partial result's JSON (partial header, golden frame table, same people as the view, skipped flags), CSV (header, row count, track ids) and MP4 (frame count, duration) have the right content (M2-4, F11); reload -> Continue skips the finished chunks (M2-5) | runs |
 | `perf.spec.ts` | real / none | gtu (33 s) done in <= 60 s; first skeletons <= 3 s; overlay p95 | 2 run, **1 `fixme`** (overlay p95 lives in the vitest perf project) |
 | `m4-restart`, `m4-cancel-recovery`, `m4-finalize`, `m4-keep`, `m4-resume`, `m4-tier-ladder`, `m4-pick-survives`, `m4-reduced-motion`, `m4-visual` | real, with fault injection from `m4-support.ts` | worker stall restart and step-down, failed inference, Cancel at each moment of a recovery, finalize hang, Keep after cancel, resume after reload (monotonic pill, no hole), "Try a lighter mode" ladder, picks survive the end of the analysis, exports under reduced motion, visual and colour checks on 8 clips (tests do not use the service worker) | runs |
-| `m5-offline.spec.ts` | real | F3: fresh context, service worker controls the page, offline reload with no online reload, landing appears; after an online run, offline reload and a different clip analysed from the caches | passes on `vite preview`; **fails through the Cloudflare Worker (M5-4)**, run it there too |
+| `m5-offline.spec.ts` | real | F3: fresh context, service worker controls the page, offline reload with no online reload, landing appears; after an online run, offline reload and a different clip analysed from the caches | passes on `vite preview` and through the local Cloudflare Worker (since 9b0d558) |
 | `m5-ball-gate.spec.ts` | real | F2: a clip after a ballless clip in the same engine equals the same clip in a fresh page (tracks, ball samples and their source) | runs |
 | `m5-quality.spec.ts` | real | F4: Settings quality off/on/off gives `webgpu-default`/`webgpu-quality` (D-FINE-M)/`webgpu-default` in the exported JSON | runs |
 | `m5-resume-ids.spec.ts` | real | F1: gtu reloaded at about 50 %, resumed; later arrivals have ids above all earlier ones, ids unique, compared with an uninterrupted run | runs |
@@ -190,8 +190,9 @@ spec with `E2E_TARGET=preview E2E_SERVER=cf PORT=8787` after `npm run cf:seed-lo
 - Overlay timing in an e2e page (the `perf.spec.ts` `fixme`) is only measured by the vitest perf project.
 - The 6 `fixme` tests of `app-flow`/`app-sync` and the 2 of `a11y.spec.ts` are not run; each has a replacement named in
   the table. They are kept only as pointers and may be deleted by their owner.
-- First-visit offline analysis: a context that never analysed has no models cached (the app downloads a model when a
-  clip starts), so `m5-offline` analyses offline only after an online run. Cloudflare's own offline behaviour is not tested.
+- First-visit offline reload and analysis are tested once the visit's set-up has completed (models and runtime files
+  cached), on `vite preview` and through the local Cloudflare Worker. Not tested: a real Cloudflare deployment, and a
+  first visit whose set-up is interrupted (bug M5-6: the message then blames the GPU).
 - Real devices (section 8) and release Safari/Firefox.
 - The no-ball gate of F2 is not observed directly by `m5-ball-gate`; the test shows the same result as a fresh engine.
 
@@ -238,7 +239,7 @@ PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-resume-i
 PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-keyboard     # M1 keyboard path, 10 s
 PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-vfr-timeline # F5 on an irregular clip, 15 s
 PORT=5184 E2E_TARGET=preview caffeinate -d -i -s npx playwright test m5-ui-items     # UI/UX ranks 1, 4, 7, 9, 35 s
-E2E_TARGET=preview E2E_SERVER=cf PORT=8787 npx playwright test m5-offline            # F3 through the Worker (after cf:seed-local); red until M5-4 is fixed
+E2E_TARGET=preview E2E_SERVER=cf PORT=8787 npx playwright test m5-offline            # F3 through the Worker (after cf:seed-local)
 ```
 
 Long batches need the Mac on power with the lid open: on battery, or with the lid closed, it sleeps whatever
@@ -284,6 +285,10 @@ Dated results are history, not guarantees; each row names where it was measured.
 
 | When | Revision | Environment | Command | Result |
 |---|---|---|---|---|
+| 2026-11-19 | web-app-v1 @ 9b0d558 | Mac on power, Chrome for Testing 149, production build on `vite preview` | full Chrome e2e in one run | 129 passed, 9 skipped, 0 failed (37 min) |
+| same | same | WebKit 27.2 headless | `playwright test -c tests/playwright.webkit-full.config.ts` | 74 passed, 1 skipped, 0 failed |
+| same | same | `vite preview` and the Cloudflare Worker (`wrangler dev`, local R2) | `m5-offline` on both | 2 and 2 passed (first-visit set-up, offline reload, offline analysis) |
+| same | same | same | `npm run test:harness` | 20 passed, 2 skipped (the dump tools, M5-1 fixed) |
 | 2026-11-18 | web-app-v1 @ 6b4b901 | Mac on battery (36 % falling to 6 %), Chrome for Testing 149, production build on `vite preview` :5184 | `npm run typecheck`, `npm run lint` | rc 0; lint 36 warnings, 11 infos |
 | same | same | same (Node 22.23.1) | `npm test` | 80 files, 605 tests passed (3.6 s) |
 | same | same | same | `npm run test:browser` | 29 files, 162 tests passed (36 s) |
@@ -295,4 +300,3 @@ Dated results are history, not guarantees; each row names where it was measured.
 | same | same | Cloudflare Worker (`wrangler dev`, local R2) | `E2E_TARGET=preview E2E_SERVER=cf PORT=8787 npx playwright test smoke export m5-offline` | smoke 2 and export 12 passed; `m5-offline` 2 FAILED (`net::ERR_FAILED` on the offline reload: the Worker redirects `/index.html`, bug M5-4) |
 | 2026-11-18 | same | same, `--disable-gpu` (CPU tier) | `m2-all.sh ... --args=--disable-gpu`, `m2-to-bench.mjs`, `score.ts --frames static` | static recall@.5 0.785, PCK@.05 0.939 (app output); bench page on the CPU tier 0.822 / 0.936 |
 | 2026-11-13..15 | 719fc77 + M4 tests (acceptance-m4.md) | Chrome CfT 149, WebKit 27.2, preview build | full Chrome e2e 117 passed / 9 skipped / 1 (a threshold of mine, fixed); WebKit 74 / 1 / 0; Cloudflare Worker 77 / 5 / 0 | the last complete suite runs |
-

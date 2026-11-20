@@ -733,6 +733,17 @@ export interface ExportedPoseTrack {
   };
   readonly frames: { readonly ptsUs: number[]; readonly flags: number[] };
   readonly tracks: ExportedTrack[];
+  readonly ball?: {
+    readonly samples: {
+      readonly ptsUs: number[];
+      readonly xy: number[];
+      readonly radius: number[];
+      readonly confidence: number[];
+      /** 0 none, 1 measured, 2 inferred. */
+      readonly visibility: number[];
+      readonly source: number[];
+    };
+  };
   readonly extensions?: {
     readonly partial?: { analysedFrames: number; plannedFrames: number; analysedUntilUs: number };
   };

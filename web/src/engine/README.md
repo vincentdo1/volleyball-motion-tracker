@@ -42,8 +42,10 @@ The in-browser processing engine: it turns a `File` into streamed, persisted pos
    so a consumer may ignore a seq it already holds. A same-tier restart resumes; a tier step-down changes the settings
    hash (tier and backend are in it), drops the stored windows and starts fresh from frame 0 (mixing tiers inside one
    result is out of scope). A seq that repeats after a `fresh` run-started is NOT the same batch as before.
-4. `finalize` reads every chunk back from the store (so a resumed run and an uninterrupted run finalise from identical
-   input), writes `posetrack.json` and emits `final`. It reports a `progress` with `stage: 'finalizing'` first: that is
+4. `finalize` reads every chunk back from the store, writes `posetrack.json` and emits `final`. A resumed run
+   finalises the same frame table and player tracks as an uninterrupted run, and the same ball up to the resume point.
+   After it the ball model starts a new 9-frame window and its no-ball gate again, so the ball there is a fresh
+   analysis: about as many frames with a measured ball, gaps filled differently (`m5-resume-ids` bounds it). It reports a `progress` with `stage: 'finalizing'` first: that is
    the start of the client's ceiling for the step (see Failure handling).
 5. `cancel`, then `partialResult()`: in state `opened` after a cancel the engine finalizes the analysed part once
    (`finalizeResult` over the stored chunks, `header.extensions.partial`), caches it in the run, emits a copy as `final`
