@@ -7,9 +7,12 @@ export interface EngineStatusState {
   /** Bytes of the models downloaded so far and in total, summed over the models the engine reported. */
   readonly bytesDone: number;
   readonly bytesTotal: number;
-  /** Some model is being fetched from the network (rather than read from the cache). */
+  /** A model is being fetched from the network and has not finished (afterwards the engine warms up). */
   readonly downloading: boolean;
-  /** Share downloaded, 0-100. Never goes back while preparing: models load one after another and the total grows. */
+  /**
+   * Share loaded, 0-100, over every model the engine announced before loading (it announces them all first, so the
+   * total does not grow as models report).
+   */
   readonly percent: number;
   /** The app is about to initialise the engine: forgets the earlier download figures. */
   beginPreparing(): void;
@@ -27,7 +30,7 @@ interface ModelBytes {
 /** Per model, kept outside the state: only the sums are shown. */
 let models = new Map<string, ModelBytes>();
 
-export const useEngineStatus = create<EngineStatusState>((set, get) => ({
+export const useEngineStatus = create<EngineStatusState>((set) => ({
   preparing: false,
   bytesDone: 0,
   bytesTotal: 0,
@@ -45,10 +48,10 @@ export const useEngineStatus = create<EngineStatusState>((set, get) => ({
     for (const m of models.values()) {
       done += m.done;
       total += m.total;
-      downloading ||= !m.fromCache;
+      downloading ||= !m.fromCache && m.done < m.total;
     }
     const percent = total > 0 ? Math.min(100, Math.floor((done / total) * 100)) : 0;
-    set({ bytesDone: done, bytesTotal: total, downloading, percent: Math.max(get().percent, percent) });
+    set({ bytesDone: done, bytesTotal: total, downloading, percent });
   },
   endPreparing: () => set({ preparing: false }),
 }));

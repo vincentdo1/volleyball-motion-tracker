@@ -1,11 +1,12 @@
 import Ajv2020 from 'ajv/dist/2020';
 import { describe, expect, it } from 'vitest';
-import { DEVICE_TIERS } from '@/contracts/capabilities';
+import { type CapabilityReport, DEVICE_TIERS } from '@/contracts/capabilities';
+import type { MlModule } from '@/contracts/pipeline';
 import type { PoseTrackDocument } from '@/contracts/posetrack';
 import schema from '@/contracts/posetrack.schema.json';
 import minimal from '../../contracts/examples/minimal.posetrack.json';
 import { artifactById } from './model-lock';
-import { modelInfo } from './ort-provider';
+import { createOrtRuntimeProvider, modelInfo } from './ort-provider';
 
 const validate = new Ajv2020({ allErrors: true, strict: true, allowUnionTypes: true }).compile(schema);
 
@@ -22,4 +23,25 @@ describe('model records of the exported document (M2-3)', () => {
       expect(models[2]?.inputSize).toEqual([512, 288]);
     });
   }
+});
+
+describe('model download announcement (re-review N1)', () => {
+  it('announces every model of the tier, with its size, before any download is awaited', () => {
+    const tier = DEVICE_TIERS['wasm-st'];
+    const events: { modelId: string; bytesDone: number; bytesTotal: number; fromCache: boolean }[] = [];
+    // a network that never answers: only what prepare() reports before its first download can arrive
+    const provider = createOrtRuntimeProvider({ fetchFn: () => new Promise<Response>(() => {}), cacheStorage: null });
+    void provider.prepare({
+      tier,
+      ml: {} as MlModule,
+      capabilities: {} as CapabilityReport,
+      options: {},
+      onModelProgress: (event) => events.push(event),
+    });
+    expect(events.map((e) => e.modelId)).toEqual([tier.models.detector, tier.models.pose, tier.models.ball]);
+    for (const event of events) {
+      expect(event.bytesDone).toBe(0);
+      expect(event.bytesTotal).toBe(artifactById(event.modelId).size);
+    }
+  });
 });

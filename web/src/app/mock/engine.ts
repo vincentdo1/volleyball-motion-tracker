@@ -227,9 +227,15 @@ export class MockEngine implements EngineApi, EngineHandle {
     return info;
   }
 
-  /** Reports a model download like the engine's model manager: each model in four steps, one after another. */
+  /**
+   * Reports a model download like the engine: every model announced first (nothing loaded, not a download yet), then
+   * each one downloaded in four steps, one after another.
+   */
   private async downloadModels(tier: DeviceTier): Promise<void> {
     const total = 24 * 2 ** 20;
+    for (const id of Object.values(tier.models)) {
+      this.emit({ type: 'model-progress', modelId: id, bytesDone: 0, bytesTotal: total, fromCache: true });
+    }
     for (const id of Object.values(tier.models)) {
       for (let step = 1; step <= 4; step++) {
         await this.delay(this.config.chunkDelayMs * 3);

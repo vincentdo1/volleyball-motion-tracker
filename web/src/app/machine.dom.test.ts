@@ -512,7 +512,8 @@ describe('preparing the analysis after a file choice (UI/UX 1)', () => {
       );
     }
     expect(downloading.every((e) => e.machine === 'booting')).toBe(true);
-    expect(downloading.at(-1)?.percent).toBe(100);
+    // once every model is in, the download is over while the engine still prepares (warm-up)
+    expect(seen.some((e) => e.preparing && !e.downloading && e.percent === 100)).toBe(true);
     expect(useEngineStatus.getState().preparing).toBe(false);
   });
 

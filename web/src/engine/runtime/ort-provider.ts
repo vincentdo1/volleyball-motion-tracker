@@ -72,8 +72,14 @@ export function createOrtRuntimeProvider(manager: ModelManagerOptions = {}): Run
         ...manager,
         ...(options.modelBaseUrl === undefined ? {} : { baseUrl: options.modelBaseUrl }),
       });
+      const planned = [artifacts.detector, artifacts.pose, artifacts.ball];
+      // Every model the tier needs, before any of them reports: a progress total made of the models that happened to
+      // report first would read 100 % while the large ones are still downloading. Not a download yet (fromCache).
+      for (const artifact of planned) {
+        request.onModelProgress({ modelId: artifact.id, bytesDone: 0, bytesTotal: artifact.size, fromCache: true });
+      }
       const [detector, pose, ball] = await Promise.all(
-        [artifacts.detector, artifacts.pose, artifacts.ball].map(async (artifact) => ({
+        planned.map(async (artifact) => ({
           artifact,
           bytes: await models.load(artifact, (progress) => request.onModelProgress(progress)),
         })),
