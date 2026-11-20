@@ -13,7 +13,7 @@ import {
 import { CASES_DIR, exportFile, isPreview, repoVideo } from './support';
 
 /**
- * Codex review F2: one page (so one engine, one prepared pipeline) analyses two clips in a row. Clip one has nobody and
+ * Review finding F2: one page (so one engine, one prepared pipeline) analyses two clips in a row. Clip one has nobody and
  * no ball, so after three seconds the ball stage's "no ball yet" gate gives up on the ball model; the review's probe
  * showed that this state survived into the next clip, which then never ran the ball model at all. Clip two is a
  * normal clip: its exported tracks and ball samples (with their source) must equal the same clip analysed in a page

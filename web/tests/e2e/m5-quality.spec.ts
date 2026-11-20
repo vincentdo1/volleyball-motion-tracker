@@ -4,7 +4,7 @@ import { installProbe, outDir, readPoseTrack, saveJson, waitComplete } from './m
 import { exportFile, isPreview, repoVideo } from './support';
 
 /**
- * Codex review F4: the Settings "Quality mode" toggle promises to apply to the NEXT clip. In one page (one engine):
+ * Review finding F4: the Settings "Quality mode" toggle promises to apply to the NEXT clip. In one page (one engine):
  * quality off -> clip one exports tier webgpu-default; quality on -> clip two exports webgpu-quality (D-FINE-M in the
  * model list); quality off again -> clip three exports webgpu-default again. Judged on the exported JSON, not on the
  * toggle.

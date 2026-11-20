@@ -2,7 +2,7 @@ import { expect, type Page, test } from '@playwright/test';
 import { isPreview, repoVideo } from './support';
 
 /**
- * Codex review F3 (and plan M4 "offline after first load"): a FRESH browser context loads the production build, waits
+ * Review finding F3 (and plan M4 "offline after first load"): a FRESH browser context loads the production build, waits
  * until the service worker controls the page, goes offline and reloads with no online reload in between. The landing
  * screen must appear (the review saw an empty page: the precached JS/CSS carried `Vary: Origin` and did not match the
  * browser's module requests). The visit's set-up (models and runtime files cached) completes before the network goes

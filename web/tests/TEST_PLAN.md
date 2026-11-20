@@ -228,7 +228,7 @@ npm run test:harness -- tests/harness           # accuracy / tracking / ball sco
 VBT_CHROME=/path/to/chrome npm run test:e2e     # alternative Chrome
 ```
 
-Codex-round specs (each runs alone; production build, `npm run build` then `PORT=5184 npm run preview` first; add
+Review-round specs (each runs alone; production build, `npm run build` then `PORT=5184 npm run preview` first; add
 `M4_OUT=<dir>` to keep their evidence outside the default `m4-runs` folder):
 
 ```

@@ -7,7 +7,7 @@ import { outDir, saveJson, waitComplete } from './m4-support';
 import { isPreview, repoVideo } from './support';
 
 /**
- * Codex review F5, on the production build with a real irregular clip: 100 frames in the first second, then 10 frames
+ * Review finding F5, on the production build with a real irregular clip: 100 frames in the first second, then 10 frames
  * over the next 8.1 s (110 frames, 9.1 s; cut from attempt_04 with ffmpeg, kept outside the repository). The timeline's
  * ruler is time, so a click at 50 % of the track must land at about 4.55 s (the frame on screen then is the one at
  * 3.7 s); a frame-linear lane would land at frame 55, which is 0.55 s. The playhead must stand where the ruler says

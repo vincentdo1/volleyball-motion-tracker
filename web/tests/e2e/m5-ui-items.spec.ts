@@ -4,7 +4,7 @@ import { outDir, saveJson, waitComplete } from './m4-support';
 import { exportFile, isPreview, repoVideo } from './support';
 
 /**
- * The UI/UX items of the Codex review that were done, checked in the real app (production build):
+ * The UI/UX items of the review that were done, checked in the real app (production build):
  *   rank 1: "Preparing analysis" from the moment a file is chosen (no ignored-click look)
  *   rank 4: Cancel in the export sheet aborts a running video export without an error
  *   rank 7: a codec identifier on the error screen is shown as a recognisable name

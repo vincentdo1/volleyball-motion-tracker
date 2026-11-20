@@ -6,7 +6,7 @@ import { computeRefBoneLengths } from '../../src/render/frame-source';
 import { writePose } from '../../src/render/synthetic';
 
 /**
- * Codex review B1, checked independently of the builder's tests: the renderer's reference bone lengths (which gate
+ * Review finding B1, checked independently of the builder's tests: the renderer's reference bone lengths (which gate
  * which bones are drawn and normalise the speed colours) come from a time window, so the same motion gives the same
  * reference at any sampling rate, and on irregular timestamps. A player grows from 100 to 220 px over 4 s (walking
  * towards the camera); the reference at a given time must follow the size at that time, not depend on the sample count.

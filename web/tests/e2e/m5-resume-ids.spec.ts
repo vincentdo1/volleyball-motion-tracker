@@ -15,7 +15,7 @@ import {
 import { exportFile, isPreview, repoVideo } from './support';
 
 /**
- * Codex review F1: resume read only the last stored chunk and started allocating track ids from that chunk's own
+ * Review finding F1: resume read only the last stored chunk and started allocating track ids from that chunk's own
  * maximum, so a person arriving after the reload could take an earlier person's id (and finalisation, which groups
  * samples by id, then merged two people). gtu is reloaded at about 50 %, resumed with Continue and let finish. Every
  * track first seen after the resume point must have an id above every id of a track seen before it, and no id may be
@@ -143,7 +143,7 @@ test('F1: after a resume at about 50 % every new person gets an id above all ear
   expect(r.tracks, 'track count against the uninterrupted run').toBeGreaterThanOrEqual(u.tracks - 3);
   expect(r.worstJumpBH, 'no track teleports (identity merge)').toBeLessThanOrEqual(Math.max(u.worstJumpBH * 1.5, 8));
 
-  // The resume guarantee (Codex re-review N2): the frame table and every player track come out exactly as in the
+  // The resume guarantee (re-review finding N2): the frame table and every player track come out exactly as in the
   // uninterrupted run, and so does the ball up to the resume point. After it the ball model starts a new 9-frame
   // window and its no-ball gate again, so the ball there is a fresh analysis: about as many frames with a measured
   // ball (gtu: 490 against 496 of 691), with gaps filled differently (inferred 187 against 127). Exact ball resume is a

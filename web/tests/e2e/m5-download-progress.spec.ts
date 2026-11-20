@@ -2,7 +2,7 @@ import { expect, type Route, test } from '@playwright/test';
 import { isPreview, repoVideo } from './support';
 
 /**
- * Codex re-review N1, the symptom a user sees: in its repro the small ball model finished while the detector and pose
+ * Re-review finding N1, the symptom a user sees: in its repro the small ball model finished while the detector and pose
  * downloads were held, and the app read "100 %" with almost every byte still to come. Here the large downloads are
  * held the same way: no share shown meanwhile comes near 100 %, and once they are let through the clip reaches
  * results. (That the engine announces every model before loading is checked in src/engine/runtime/ort-provider.test.ts:
