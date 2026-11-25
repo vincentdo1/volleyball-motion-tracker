@@ -1,0 +1,247 @@
+{
+  "lockVersion": 1,
+  "description": "Pinned model artifacts. sha256 and size are of the .onnx file the app loads. `npm run fetch-models` downloads into cacheDir, verifies, and links shipped files into public/models/<file>. Upstream URLs are pinned to a revision; production serves the same bytes from R2.",
+  "cacheDir": "~/.cache/volleyball-motion-tracker/models",
+  "servedPath": "/models/",
+  "models": [
+    {
+      "id": "dfine-s-coco.fp16",
+      "role": "person-detector",
+      "family": "d-fine",
+      "displayName": "D-FINE-S (COCO) fp16",
+      "version": "onnx-community/dfine_s_coco-ONNX@a3cf03147a9b86c78475139115c8ac142577352d",
+      "precision": "fp16",
+      "file": "dfine-s-coco.fp16.327193f65c26.onnx",
+      "cacheFile": "dfine_s_coco_fp16.onnx",
+      "sha256": "327193f65c26ed0e14d916e94cd5d38758298f0b8726b5f169c6b30a85ab5ab5",
+      "size": 21041872,
+      "ship": true,
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/Peterande/D-FINE/blob/master/LICENSE",
+      "attribution": "D-FINE (Peng et al., 2024); ONNX export by onnx-community on Hugging Face",
+      "upstream": "https://huggingface.co/onnx-community/dfine_s_coco-ONNX",
+      "source": {
+        "kind": "direct",
+        "url": "https://huggingface.co/onnx-community/dfine_s_coco-ONNX/resolve/a3cf03147a9b86c78475139115c8ac142577352d/onnx/model_fp16.onnx"
+      },
+      "io": {
+        "inputs": [{ "name": "pixel_values", "dims": ["batch_size", 3, "height", "width"], "dtype": "float32" }],
+        "outputs": [
+          { "name": "logits", "dims": ["batch_size", 300, 80], "dtype": "float32" },
+          { "name": "pred_boxes", "dims": ["batch_size", 300, 4], "dtype": "float32" }
+        ]
+      },
+      "notes": "Default detector (06 bake-off R1). Stretch resize to 640x640, RGB / 255, no mean/std. Sigmoid logits; person = class 0, sports ball = 32; boxes are normalised cx, cy, w, h."
+    },
+    {
+      "id": "dfine-s-coco.fp32",
+      "role": "person-detector",
+      "family": "d-fine",
+      "displayName": "D-FINE-S (COCO) fp32",
+      "version": "onnx-community/dfine_s_coco-ONNX@a3cf03147a9b86c78475139115c8ac142577352d",
+      "precision": "fp32",
+      "file": "dfine-s-coco.fp32.cd8a49a945fe.onnx",
+      "cacheFile": "dfine_s_coco_fp32.onnx",
+      "sha256": "cd8a49a945feda6d28c6304ae8ae85c2759ba1d78a5a83a22c5ce8db82ef7238",
+      "size": 41535197,
+      "ship": true,
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/Peterande/D-FINE/blob/master/LICENSE",
+      "attribution": "D-FINE (Peng et al., 2024); ONNX export by onnx-community on Hugging Face",
+      "upstream": "https://huggingface.co/onnx-community/dfine_s_coco-ONNX",
+      "source": {
+        "kind": "direct",
+        "url": "https://huggingface.co/onnx-community/dfine_s_coco-ONNX/resolve/a3cf03147a9b86c78475139115c8ac142577352d/onnx/model.onnx"
+      },
+      "io": {
+        "inputs": [{ "name": "pixel_values", "dims": ["batch_size", 3, "height", "width"], "dtype": "float32" }],
+        "outputs": [
+          { "name": "logits", "dims": ["batch_size", 300, 80], "dtype": "float32" },
+          { "name": "pred_boxes", "dims": ["batch_size", 300, 4], "dtype": "float32" }
+        ]
+      },
+      "notes": "Detector for the webgpu-fp32 tier (640 input) and the WASM tiers (480 input, same weights)."
+    },
+    {
+      "id": "dfine-m-coco.fp16",
+      "role": "person-detector",
+      "family": "d-fine",
+      "displayName": "D-FINE-M (COCO) fp16",
+      "version": "onnx-community/dfine_m_coco-ONNX@489756db2825cb068a588fe930af239a656d1fe1",
+      "precision": "fp16",
+      "file": "dfine-m-coco.fp16.227cda5fa015.onnx",
+      "cacheFile": "dfine_m_coco_fp16.onnx",
+      "sha256": "227cda5fa015076a03dfb39661ebce609e92bea563a89a34871dea348ef31562",
+      "size": 39647736,
+      "ship": true,
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/Peterande/D-FINE/blob/master/LICENSE",
+      "attribution": "D-FINE (Peng et al., 2024); ONNX export by onnx-community on Hugging Face",
+      "upstream": "https://huggingface.co/onnx-community/dfine_m_coco-ONNX",
+      "source": {
+        "kind": "direct",
+        "url": "https://huggingface.co/onnx-community/dfine_m_coco-ONNX/resolve/489756db2825cb068a588fe930af239a656d1fe1/onnx/model_fp16.onnx"
+      },
+      "io": {
+        "inputs": [{ "name": "pixel_values", "dims": ["batch_size", 3, "height", "width"], "dtype": "float32" }],
+        "outputs": [
+          { "name": "logits", "dims": ["batch_size", 300, 80], "dtype": "float32" },
+          { "name": "pred_boxes", "dims": ["batch_size", 300, 4], "dtype": "float32" }
+        ]
+      },
+      "notes": "Quality opt-in detector (+2.7 pts recall on wide match footage, about a third of the false positives)."
+    },
+    {
+      "id": "rtmpose-m-halpe26.fp32",
+      "role": "pose",
+      "family": "rtmpose",
+      "displayName": "RTMPose-m body7 Halpe26 256x192 fp32",
+      "version": "mmpose rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192-4d3e73dd_20230605",
+      "precision": "fp32",
+      "file": "rtmpose-m-halpe26.fp32.26f3a19e6130.onnx",
+      "cacheFile": "rtmpose_m26_fp32.onnx",
+      "sha256": "26f3a19e61304a600dfb82d1001d41d24343b89fc70a33ffc84657e0b0bf2ecf",
+      "size": 55685444,
+      "ship": false,
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/open-mmlab/mmpose/blob/main/LICENSE",
+      "attribution": "RTMPose (Jiang et al., 2023), OpenMMLab MMPose; trained on the body7 mix including AI Challenger",
+      "upstream": "https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose",
+      "source": {
+        "kind": "zip",
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192-4d3e73dd_20230605.zip",
+        "sha256": "55b81170e236040b59fc792ad0a8315301ac4c079a3bdb1095d838aad3088d18",
+        "size": 52089522,
+        "innerPath": "20230831/rtmpose_onnx/rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192-4d3e73dd_20230605/end2end.onnx"
+      },
+      "io": {
+        "inputs": [{ "name": "input", "dims": ["batch", 3, 256, 192], "dtype": "float32" }],
+        "outputs": [
+          { "name": "simcc_x", "dims": ["batch", 26, 384], "dtype": "float32" },
+          { "name": "simcc_y", "dims": ["batch", 26, 512], "dtype": "float32" }
+        ]
+      },
+      "notes": "Reference only (Node parity tests) and the source of the fp16 build."
+    },
+    {
+      "id": "rtmpose-m-halpe26.fp16",
+      "role": "pose",
+      "family": "rtmpose",
+      "displayName": "RTMPose-m body7 Halpe26 256x192 fp16",
+      "version": "mmpose rtmpose-m_simcc-body7_pt-body7-halpe26_700e-256x192-4d3e73dd_20230605 (fp16 build)",
+      "precision": "fp16",
+      "file": "rtmpose-m-halpe26.fp16.673466126f34.onnx",
+      "cacheFile": "rtmpose_m26_fp16.onnx",
+      "sha256": "673466126f340320c2f0ebddb1514281af694294c006137b9293c85afaad7ef1",
+      "size": 27884563,
+      "ship": true,
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/open-mmlab/mmpose/blob/main/LICENSE",
+      "attribution": "RTMPose (Jiang et al., 2023), OpenMMLab MMPose; trained on the body7 mix including AI Challenger",
+      "upstream": "https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose",
+      "source": {
+        "kind": "derived",
+        "from": "rtmpose-m-halpe26.fp32",
+        "recipe": "python3 -I scripts/convert_fp16.py {in} {out} --nodes Mul_213,ReduceSum_214,Sqrt_215,Mul_217,Clip_218,Div_219,Mul_220,MatMul_221,Mul_222,ReduceSum_223,Sqrt_224,Mul_226,Clip_227,Div_228,MatMul_241,Div_243,Relu_244,Mul_245,MatMul_246",
+        "toolchain": "onnx==1.17.0 onnxconverter-common==1.16.0 numpy==2.0.2 protobuf==6.33.6 (reproduces the sha256 byte for byte)"
+      },
+      "io": {
+        "inputs": [{ "name": "input", "dims": ["batch", 3, 256, 192], "dtype": "float32" }],
+        "outputs": [
+          { "name": "simcc_x", "dims": ["batch", 26, 384], "dtype": "float32" },
+          { "name": "simcc_y", "dims": ["batch", 26, 512], "dtype": "float32" }
+        ]
+      },
+      "notes": "Default pose model. fp16 weights and compute, float32 I/O; both ScaleNorms and the GAU squared-ReLU attention stay fp32 (they overflow fp16). Crop: bbox_xyxy2cs x1.25, aspect 0.75, affine 256x192, ImageNet mean/std on 0-255; SimCC argmax / 2."
+    },
+    {
+      "id": "rtmpose-s-halpe26.fp32",
+      "role": "pose",
+      "family": "rtmpose",
+      "displayName": "RTMPose-s body7 Halpe26 256x192 fp32",
+      "version": "mmpose rtmpose-s_simcc-body7_pt-body7-halpe26_700e-256x192-7f134165_20230605",
+      "precision": "fp32",
+      "file": "rtmpose-s-halpe26.fp32.85c5d669aa0b.onnx",
+      "cacheFile": "rtmpose_s26_fp32.onnx",
+      "sha256": "85c5d669aa0b0c7969799ea9e0620d3b8c1d3c2b6878243e98a1ef8351457986",
+      "size": 22793379,
+      "ship": true,
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/open-mmlab/mmpose/blob/main/LICENSE",
+      "attribution": "RTMPose (Jiang et al., 2023), OpenMMLab MMPose; trained on the body7 mix including AI Challenger",
+      "upstream": "https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose",
+      "source": {
+        "kind": "zip",
+        "url": "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-s_simcc-body7_pt-body7-halpe26_700e-256x192-7f134165_20230605.zip",
+        "sha256": "0b3d2545ab048c403c3824af8320f0842c52570f5bc1b6745087749f4fef3a28",
+        "size": 21371025,
+        "innerPath": "20230831/rtmpose_onnx/rtmpose-s_simcc-body7_pt-body7-halpe26_700e-256x192-7f134165_20230605/end2end.onnx"
+      },
+      "io": {
+        "inputs": [{ "name": "input", "dims": ["batch", 3, 256, 192], "dtype": "float32" }],
+        "outputs": [
+          { "name": "simcc_x", "dims": ["batch", 26, 384], "dtype": "float32" },
+          { "name": "simcc_y", "dims": ["batch", 26, 512], "dtype": "float32" }
+        ]
+      },
+      "notes": "Pose model for the webgpu-fp32 and WASM tiers (WASM: one person per call; batch 2 is about 3x slower than batch 1)."
+    },
+    {
+      "id": "rtmpose-s-halpe26.fp16",
+      "role": "pose",
+      "family": "rtmpose",
+      "displayName": "RTMPose-s body7 Halpe26 256x192 fp16",
+      "version": "mmpose rtmpose-s_simcc-body7_pt-body7-halpe26_700e-256x192-7f134165_20230605 (fp16 build)",
+      "precision": "fp16",
+      "file": "rtmpose-s-halpe26.fp16.907a6d72d61c.onnx",
+      "cacheFile": "rtmpose_s26_fp16.onnx",
+      "sha256": "907a6d72d61c57a341d23760512394a493545ed35862150bcdd9ac1a0106c452",
+      "size": 11435244,
+      "ship": true,
+      "license": "Apache-2.0",
+      "licenseUrl": "https://github.com/open-mmlab/mmpose/blob/main/LICENSE",
+      "attribution": "RTMPose (Jiang et al., 2023), OpenMMLab MMPose; trained on the body7 mix including AI Challenger",
+      "upstream": "https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose",
+      "source": {
+        "kind": "derived",
+        "from": "rtmpose-s-halpe26.fp32",
+        "recipe": "python3 -I scripts/convert_fp16.py {in} {out} --nodes Mul_154,ReduceSum_155,Sqrt_156,Mul_158,Clip_159,Div_160,Mul_161,MatMul_162,Mul_163,ReduceSum_164,Sqrt_165,Mul_167,Clip_168,Div_169,MatMul_182,Div_184,Relu_185,Mul_186,MatMul_187",
+        "toolchain": "onnx==1.17.0 onnxconverter-common==1.16.0 numpy==2.0.2 protobuf==6.33.6 (reproduces the sha256 byte for byte)"
+      },
+      "io": {
+        "inputs": [{ "name": "input", "dims": ["batch", 3, 256, 192], "dtype": "float32" }],
+        "outputs": [
+          { "name": "simcc_x", "dims": ["batch", 26, 384], "dtype": "float32" },
+          { "name": "simcc_y", "dims": ["batch", 26, 512], "dtype": "float32" }
+        ]
+      },
+      "notes": "Pose model for the webgpu-lite tier."
+    },
+    {
+      "id": "vballnet-v4c.fp32",
+      "role": "ball",
+      "family": "vballnet",
+      "displayName": "VballNetV4c seq9 grayscale 288x512",
+      "version": "asigatchov/fast-volleyball-tracking-inference@b69293a6736f607a356aec179eaf791681de02ce",
+      "precision": "fp32",
+      "file": "vballnet-v4c.fp32.8eea11cc5c88.onnx",
+      "cacheFile": "vballnet_v4c_seq9_gray_288x512.onnx",
+      "sha256": "8eea11cc5c881fa008ec55b0f5732ab79f2e0e1833d7f586e680f3aaa98e4b8c",
+      "size": 987155,
+      "ship": true,
+      "license": "MIT",
+      "licenseUrl": "https://github.com/asigatchov/fast-volleyball-tracking-inference/blob/master/LICENSE",
+      "attribution": "VballNetV4c by Alexander Sigatchov (asigatchov), MIT",
+      "upstream": "https://github.com/asigatchov/fast-volleyball-tracking-inference",
+      "source": {
+        "kind": "direct",
+        "url": "https://raw.githubusercontent.com/asigatchov/fast-volleyball-tracking-inference/b69293a6736f607a356aec179eaf791681de02ce/models/VballNetV4c_seq9_grayscale_20260908_213829.onnx"
+      },
+      "io": {
+        "inputs": [{ "name": "clip", "dims": ["B", 9, 288, 512], "dtype": "float32" }],
+        "outputs": [{ "name": "heatmaps", "dims": ["B", 18, 288, 512], "dtype": "float32" }]
+      },
+      "notes": "Ball heatmaps from 9 consecutive grayscale frames (stretch to 512x288, / 255). Channels 0-8: per-frame sigmoid heatmaps (threshold 0.5, largest-contour centroid); 9-17: radius maps in frame-width units. The gtu test clip is in its training data."
+    }
+  ]
+}

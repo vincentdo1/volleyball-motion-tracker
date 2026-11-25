@@ -1,0 +1,10 @@
+{
+  "note": "Regions where a detection is not a player: the two beach net posts (1920x1080). A teacher or labelled person that lies at least 80 % inside one, or overlaps it at IoU >= 0.5, is treated as an ignore region (predictions there are neither hits nor false positives).",
+  "clips": {
+    "beach": {
+      "width": 1920,
+      "height": 1080,
+      "regions": [[545, 480, 584, 660], [1266, 480, 1300, 660]]
+    }
+  }
+}

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ball labelling</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 16px; font: 14px/1.4 system-ui, sans-serif; }
+      canvas { max-width: 100%; border: 1px solid #888; cursor: crosshair; }
+      .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+      textarea { width: 100%; height: 160px; font: 12px/1.3 ui-monospace, monospace; }
+    </style>
+  </head>
+  <body>
+    <div class="bar">
+      <select id="clip" aria-label="Clip"></select>
+      <button id="prev" type="button">Prev</button>
+      <input id="slider" type="range" min="0" max="0" value="0" aria-label="Frame" />
+      <button id="next" type="button">Next</button>
+      <button id="absent" type="button">Ball absent (a)</button>
+      <button id="unlabel" type="button">Unlabelled (u)</button>
+      <label>Radius px <input id="radius" type="number" value="20" min="2" max="200" style="width: 5em" /></label>
+      <span id="status"></span>
+    </div>
+    <canvas id="view"></canvas>
+    <p>Click the ball centre to label it visible (the radius field sets its size). Keys: left / right step, a absent, u unlabelled.
+      Copy the JSON below over <code>tests/fixtures/ball.json</code> and run <code>npx biome format --write tests/fixtures/ball.json</code>.</p>
+    <textarea id="out" readonly aria-label="Labels JSON"></textarea>
+    <script type="module">
+      const labels = await (await fetch('/tests/fixtures/ball.json')).json();
+      const meta = await (await fetch('/__fixtures/bakeoff/frames_meta.json')).json();
+      const $ = (id) => document.getElementById(id);
+      const canvas = $('view');
+      const ctx = canvas.getContext('2d');
+      const image = new Image();
+      const clips = [...new Set(meta.frames.filter((f) => f.clip !== 'gtu').map((f) => f.clip))];
+      let clip = clips[0];
+      let index = 0;
+      const frames = () => meta.frames.filter((f) => f.clip === clip).sort((a, b) => a.index - b.index);
+      const frame = () => frames()[index];
+      for (const name of clips) $('clip').add(new Option(name, name));
+
+      function entry() {
+        return labels.clips[clip]?.frames.find((e) => e.file === frame().file);
+      }
+      function setEntry(next) {
+        const f = frame();
+        labels.clips[clip] ??= { video: meta.clips[clip].file, width: f.W, height: f.H, frames: [] };
+        const c = labels.clips[clip];
+        c.frames = c.frames.filter((e) => e.file !== f.file);
+        if (next) c.frames.push({ file: f.file, ptsUs: Math.round(f.pts_ms * 1000), ...next });
+        c.frames.sort((a, b) => a.ptsUs - b.ptsUs);
+        draw();
+      }
+      function draw() {
+        const f = frame();
+        canvas.width = f.W; canvas.height = f.H;
+        ctx.drawImage(image, 0, 0);
+        const e = entry();
+        if (e?.visible) { ctx.strokeStyle = '#f0f'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, 7); ctx.stroke(); }
+        $('status').textContent = `${f.file}  ${e ? (e.visible ? 'visible' : 'absent') : 'unlabelled'}`;
+        $('slider').max = frames().length - 1; $('slider').value = index;
+        $('out').value = JSON.stringify(labels);
+      }
+      function load() { image.onload = draw; image.src = `/__fixtures/frames/${frame().file}`; }
+      $('clip').onchange = (e) => { clip = e.target.value; index = 0; load(); };
+      $('slider').oninput = (e) => { index = Number(e.target.value); load(); };
+      $('prev').onclick = () => { index = Math.max(0, index - 1); load(); };
+      $('next').onclick = () => { index = Math.min(frames().length - 1, index + 1); load(); };
+      $('absent').onclick = () => setEntry({ visible: false });
+      $('unlabel').onclick = () => setEntry(null);
+      canvas.onclick = (e) => {
+        const r = canvas.getBoundingClientRect();
+        setEntry({ visible: true, x: Math.round(((e.clientX - r.left) / r.width) * canvas.width * 10) / 10, y: Math.round(((e.clientY - r.top) / r.height) * canvas.height * 10) / 10, radius: Number($('radius').value) });
+      };
+      addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' && e.target.type === 'number') return;
+        if (e.key === 'ArrowLeft') $('prev').click(); else if (e.key === 'ArrowRight') $('next').click();
+        else if (e.key === 'a') $('absent').click(); else if (e.key === 'u') $('unlabel').click();
+      });
+      load();
+    </script>
+  </body>
+</html>

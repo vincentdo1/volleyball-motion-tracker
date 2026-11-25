@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Track labelling</title>
+    <style>
+      :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #bbb; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #151515; --fg: #eee; --muted: #999; --line: #444; } }
+      body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+      main { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; padding: 16px; }
+      @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+      canvas { width: 100%; height: auto; border: 1px solid var(--line); cursor: crosshair; }
+      .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+      button, select, input { font: inherit; }
+      textarea { width: 100%; height: 200px; font: 12px/1.3 ui-monospace, monospace; }
+      .muted { color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section>
+        <div class="bar">
+          <select id="clip" aria-label="Clip"></select>
+          <button id="prev" type="button">Prev</button>
+          <input id="slider" type="range" min="0" max="0" value="0" aria-label="Frame" />
+          <button id="next" type="button">Next</button>
+          <span id="status" class="muted"></span>
+        </div>
+        <canvas id="view" width="960" height="540"></canvas>
+      </section>
+      <aside>
+        <p id="selection" class="muted">Click a box to select a person.</p>
+        <div class="bar">
+          <button id="merge" type="button">Merge into...</button>
+          <button id="split" type="button">Split from here...</button>
+          <button id="set" type="button">Set this frame...</button>
+          <button id="drop" type="button">Drop (ignore)</button>
+          <button id="undo" type="button">Undo</button>
+        </div>
+        <p class="muted">
+          Keys: left / right step, Esc deselect. New operations are listed below; append them to the
+          <code>ops</code> array of <code>tests/fixtures/tracks.overrides.json</code> and run
+          <code>node tests/tools/make-tracks.ts</code>.
+        </p>
+        <textarea id="ops" readonly aria-label="New operations"></textarea>
+      </aside>
+    </main>
+    <script type="module">
+      import { applyOps } from '/tests/harness/tracks.ts';
+
+      const base = await (await fetch('/tests/fixtures/tracks.json')).json();
+      const ops = [];
+      let labels = base;
+      let clipName = Object.keys(base.clips)[0];
+      let index = 0;
+      let selected = null;
+      const image = new Image();
+
+      const $ = (id) => document.getElementById(id);
+      const canvas = $('view');
+      const ctx = canvas.getContext('2d');
+      const clip = () => labels.clips[clipName];
+      const frame = () => clip().frames[index];
+      const colour = (id) => `hsl(${(id * 137.508) % 360} 85% 55%)`;
+
+      for (const name of Object.keys(base.clips)) $('clip').add(new Option(name, name));
+
+      function track(id) {
+        const hits = clip().frames.filter((f) => f.persons.some((p) => p.id === id));
+        return hits.length ? { count: hits.length, first: hits[0].ptsUs, last: hits[hits.length - 1].ptsUs } : null;
+      }
+
+      function draw() {
+        const f = frame();
+        const scale = canvas.width / clip().width;
+        canvas.height = Math.round(clip().height * scale);
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(200,200,200,.8)';
+        ctx.lineWidth = 1;
+        for (const [x0, y0, x1, y1] of f.ignore) ctx.strokeRect(x0 * scale, y0 * scale, (x1 - x0) * scale, (y1 - y0) * scale);
+        ctx.setLineDash([]);
+        ctx.font = 'bold 14px system-ui';
+        for (const p of f.persons) {
+          const [x0, y0, x1, y1] = p.box;
+          ctx.strokeStyle = colour(p.id);
+          ctx.lineWidth = p.id === selected ? 4 : 2;
+          ctx.strokeRect(x0 * scale, y0 * scale, (x1 - x0) * scale, (y1 - y0) * scale);
+          ctx.fillStyle = colour(p.id);
+          ctx.fillText(String(p.id), x0 * scale + 2, Math.max(12, y0 * scale - 3));
+        }
+        $('status').textContent = `${index + 1}/${clip().frames.length}  pts ${f.ptsUs} us  ${f.persons.length} players, ${f.ignore.length} ignored`;
+        const t = selected === null ? null : track(selected);
+        $('selection').textContent = t
+          ? `Selected id ${selected}: ${t.count} frames, pts ${t.first} .. ${t.last} us`
+          : 'Click a box to select a person.';
+        $('ops').value = JSON.stringify(ops, null, 1);
+        $('slider').max = clip().frames.length - 1;
+        $('slider').value = index;
+      }
+
+      function load() {
+        image.onload = draw;
+        image.src = `/__fixtures/frames/${frame().file}`;
+        draw();
+      }
+
+      function apply(op) {
+        try {
+          labels = applyOps(base, [...ops, op]);
+          ops.push(op);
+          selected = null;
+          draw();
+        } catch (error) {
+          alert(error.message);
+        }
+      }
+
+      const ask = (text) => {
+        const answer = prompt(text);
+        return answer === null || answer.trim() === '' ? null : Number(answer);
+      };
+
+      $('clip').onchange = (e) => { clipName = e.target.value; index = 0; selected = null; load(); };
+      $('slider').oninput = (e) => { index = Number(e.target.value); load(); };
+      $('prev').onclick = () => { index = Math.max(0, index - 1); load(); };
+      $('next').onclick = () => { index = Math.min(clip().frames.length - 1, index + 1); load(); };
+      $('merge').onclick = () => { const to = selected && ask(`Merge id ${selected} into id:`); if (to) apply({ op: 'merge', clip: clipName, from: selected, to }); };
+      $('split').onclick = () => { const to = selected && ask(`Relabel id ${selected} from this frame on as id:`); if (to) apply({ op: 'split', clip: clipName, id: selected, fromPtsUs: frame().ptsUs, to }); };
+      $('set').onclick = () => { const to = selected && ask(`Relabel id ${selected} in this frame only as id:`); if (to) apply({ op: 'set', clip: clipName, ptsUs: frame().ptsUs, id: selected, to }); };
+      $('drop').onclick = () => { if (selected) apply({ op: 'drop', clip: clipName, id: selected }); };
+      $('undo').onclick = () => { ops.pop(); labels = applyOps(base, ops); selected = null; draw(); };
+      canvas.onclick = (e) => {
+        const r = canvas.getBoundingClientRect();
+        const x = ((e.clientX - r.left) / r.width) * clip().width;
+        const y = ((e.clientY - r.top) / r.height) * clip().height;
+        const hit = frame().persons.filter((p) => x >= p.box[0] && x <= p.box[2] && y >= p.box[1] && y <= p.box[3])
+          .sort((a, b) => (a.box[2] - a.box[0]) * (a.box[3] - a.box[1]) - (b.box[2] - b.box[0]) * (b.box[3] - b.box[1]))[0];
+        selected = hit ? hit.id : null;
+        draw();
+      };
+      addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowLeft') $('prev').click();
+        else if (e.key === 'ArrowRight') $('next').click();
+        else if (e.key === 'Escape') { selected = null; draw(); }
+      });
+      load();
+    </script>
+  </body>
+</html>
